@@ -786,6 +786,7 @@ export default function WorkoutTracker() {
   const [showPlanEditor, setShowPlanEditor] = useState(false);
   const [editContext, setEditContext] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenSupported = typeof document !== "undefined" && !!document.fullscreenEnabled;
   const touchStart = useRef(null);
 
   useEffect(() => {
@@ -962,7 +963,7 @@ export default function WorkoutTracker() {
         <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
           {syncMsg && <span style={{ fontSize: 11, color: SUB, maxWidth: 200, textAlign: "right" }}>{syncMsg}</span>}
           <RefreshCw size={30} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB, padding: 6 }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
-          {isFullscreen ? <Minimize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} /> : <Maximize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} />}
+          {fullscreenSupported && (isFullscreen ? <Minimize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} /> : <Maximize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} />)}
           {mode === "display" ? <Smartphone size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={finishEdit} />}
           <Settings size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => setShowSettings(true)} />
         </div>
