@@ -403,7 +403,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
   const today = fmtDate(new Date());
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 14, position: "relative" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 14, position: "relative", overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontSize: 24, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -415,7 +415,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 13, color: SUB, textTransform: "uppercase" }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "1fr", gap: 6, flex: 1 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "minmax(92px, 1fr)", gap: 6 }}>
         {cells.map((d, i) => {
           if (!d) return <div key={i} />;
           const wk = getWeekNumber(d, anchorDate);
