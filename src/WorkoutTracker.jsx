@@ -287,26 +287,17 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
   const monday = startOfWeek(date);
   const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(monday); d.setDate(d.getDate() + i); return d; });
   const today = fmtDate(new Date());
-  const touchX = useRef(null);
-  const onTouchStart = (e) => { e.stopPropagation(); touchX.current = e.touches[0].clientX; };
-  const onTouchEnd = (e) => {
-    e.stopPropagation();
-    if (touchX.current == null) return;
-    const dx = e.changedTouches[0].clientX - touchX.current;
-    if (Math.abs(dx) > 60) onNav(dx < 0 ? 1 : -1);
-    touchX.current = null;
-  };
   const endOfW = addDays(monday, 6);
   const label = `${monday.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${endOfW.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 16, overflowY: "auto" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 16, overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 22, fontWeight: 800 }}>{label}</div>
+        <div style={{ fontSize: 24, fontWeight: 800 }}>{label}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={20} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 11, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={20} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
@@ -321,17 +312,17 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
           const isPast = ds < today, isToday = ds === today;
           const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
           return (
-            <div key={ds} onClick={() => setEditingDate(ds)} style={{ cursor: "pointer", display: "flex", flexDirection: "column", background: CARD, borderRadius: 10, padding: 10, border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}` }}>
-              <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
+            <div key={ds} onClick={() => setEditingDate(ds)} style={{ cursor: "pointer", display: "flex", flexDirection: "column", background: CARD, borderRadius: 10, padding: 12, border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}` }}>
+              <div style={{ fontSize: 13, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
                 {exList.length > 0 ? exList.map((e, i) => (
-                  <div key={i} style={{ fontSize: 9.5, color: SUB, lineHeight: 1.4, display: "flex", gap: 4 }}>
+                  <div key={i} style={{ fontSize: 12.5, color: SUB, lineHeight: 1.5, display: "flex", gap: 4 }}>
                     <span style={{ color: GOLD, flexShrink: 0 }}>&#9656;</span>{e.ExerciseName}
                   </div>
-                )) : <div style={{ fontSize: 10, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
+                )) : <div style={{ fontSize: 13, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
               </div>
-              {note && <div style={{ fontSize: 10, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
+              {note && <div style={{ fontSize: 12.5, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 5, borderRadius: 3, background: (isPast || isToday) ? color : "transparent", marginTop: 8 }} />
             </div>
           );
@@ -410,27 +401,18 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
   for (let i = 0; i < startOffset; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
   const today = fmtDate(new Date());
-  const touchX = useRef(null);
-  const onTouchStart = (e) => { e.stopPropagation(); touchX.current = e.touches[0].clientX; };
-  const onTouchEnd = (e) => {
-    e.stopPropagation();
-    if (touchX.current == null) return;
-    const dx = e.changedTouches[0].clientX - touchX.current;
-    if (Math.abs(dx) > 60) onNav(dx < 0 ? 1 : -1);
-    touchX.current = null;
-  };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 14, position: "relative" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 14, position: "relative" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 22, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
+        <div style={{ fontSize: 24, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={20} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 11, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={20} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 11, color: SUB, textTransform: "uppercase" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 13, color: SUB, textTransform: "uppercase" }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "1fr", gap: 6, flex: 1 }}>
@@ -445,10 +427,10 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
           const isPast = ds < today, isToday = ds === today;
           const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
           return (
-            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 6, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 700 }}>{d.getDate()}</div>
-              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 9 }}>{label}</div>
-              {note && <div style={{ color: GOLD, fontSize: 8.5, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
+            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 12 }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>{d.getDate()}</div>
+              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 12 }}>{label}</div>
+              {note && <div style={{ color: GOLD, fontSize: 11, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 4, borderRadius: 2, background: (isPast || isToday) ? color : "transparent" }} />
             </div>
           );
@@ -551,6 +533,7 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
   const [slides, setSlides] = useState(settings.slides);
   const [seconds, setSeconds] = useState(settings.slideSeconds);
   const [enabled, setEnabled] = useState(settings.slideshowEnabled);
+  const [refreshMin, setRefreshMin] = useState(settings.refreshMinutes || 3);
 
   const toggleSlide = (id) => setSlides((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
@@ -586,7 +569,13 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
             style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, opacity: enabled ? 1 : 0.5, marginTop: 4 }} />
         </div>
 
-        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: anchor, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled })}
+        <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 6, paddingTop: 12 }}>
+          <label style={{ fontSize: 12, color: SUB }}>Auto-refresh from sheet every (minutes)</label>
+          <input type="number" min={1} value={refreshMin} onChange={(e) => setRefreshMin(Number(e.target.value))}
+            style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, marginTop: 4 }} />
+        </div>
+
+        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: anchor, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled, refreshMinutes: refreshMin || 3 })}
           style={{ padding: 12, borderRadius: 10, border: "none", background: ACCENT, color: "#06211D", fontWeight: 700, marginTop: 8 }}>Save</button>
 
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 4, paddingTop: 12 }}>
@@ -660,7 +649,7 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
   );
 }
 
-function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, queue, addToQueue, planOverrides, isEditingHistorical, onDone }) {
+function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, planOverrides, isEditingHistorical, onDone, onSave, pendingCount }) {
   const wk = getWeekNumber(date, anchorDate);
   const dn = dayName(date);
   const dateStr = fmtDate(date);
@@ -674,26 +663,46 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, queue,
   const [notes, setNotes] = useState(existingDaily?.Notes || "");
   const [sets, setSets] = useState({});
   const [runData, setRunData] = useState({ Distance: "", Time: "", Pace: "" });
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
 
   useEffect(() => {
     const initial = {};
-    exercises.forEach((ex) => { initial[ex.ExerciseName] = Array.from({ length: parseTargetSets(ex.TargetSets) }, () => ({ reps: "", weight: "" })); });
+    exercises.forEach((ex) => {
+      const existingRows = exerciseLog.filter((r) => r.Date === dateStr && r.ExerciseName === ex.ExerciseName).sort((a, b) => Number(a.SetNumber) - Number(b.SetNumber));
+      const count = Math.max(parseTargetSets(ex.TargetSets), existingRows.length);
+      initial[ex.ExerciseName] = Array.from({ length: count }, (_, i) => {
+        const found = existingRows.find((r) => Number(r.SetNumber) === i + 1);
+        return found ? { reps: String(found.Reps), weight: String(found.Weight) } : { reps: "", weight: "" };
+      });
+    });
     setSets(initial);
-    setStatus(existingDaily?.CompletionStatus || "None");
-    setWeight(existingDaily?.Weight || "");
-    setNotes(existingDaily?.Notes || "");
+    const dailyForDate = dailyLog.find((r) => r.Date === dateStr);
+    setStatus(dailyForDate?.CompletionStatus || "None");
+    setWeight(dailyForDate?.Weight || "");
+    setNotes(dailyForDate?.Notes || "");
+    const existingRun = runLog.find((r) => r.Date === dateStr);
+    setRunData(existingRun ? { Distance: existingRun.Distance || "", Time: existingRun.Time || "", Pace: existingRun.Pace || "" } : { Distance: "", Time: "", Pace: "" });
   }, [dateStr]);
 
   const addSetRow = (exName) => setSets((s) => ({ ...s, [exName]: [...(s[exName] || []), { reps: "", weight: "" }] }));
   const updateSetRow = (exName, i, field, val) => setSets((s) => ({ ...s, [exName]: s[exName].map((r, idx) => (idx === i ? { ...r, [field]: val } : r)) }));
   const removeSetRow = (exName, i) => setSets((s) => ({ ...s, [exName]: s[exName].filter((_, idx) => idx !== i) }));
 
-  const saveAll = () => {
-    addToQueue({ action: "logDaily", data: { Date: dateStr, Weight: weight, CompletionStatus: status, Notes: notes } });
+  const buildItems = () => {
+    const items = [{ action: "logDaily", data: { Date: dateStr, Weight: weight, CompletionStatus: status, Notes: notes } }];
     Object.entries(sets).forEach(([exName, rows]) => {
-      rows.forEach((r, i) => { if (r.reps || r.weight) addToQueue({ action: "logExercise", data: { Date: dateStr, ExerciseName: exName, SetNumber: i + 1, Reps: r.reps, Weight: r.weight } }); });
+      rows.forEach((r, i) => { if (r.reps || r.weight) items.push({ action: "logExercise", data: { Date: dateStr, ExerciseName: exName, SetNumber: i + 1, Reps: r.reps, Weight: r.weight } }); });
     });
-    if (isRunDay && (runData.Distance || runData.Time)) addToQueue({ action: "logRun", data: { Date: dateStr, ...runData } });
+    if (isRunDay && (runData.Distance || runData.Time)) items.push({ action: "logRun", data: { Date: dateStr, ...runData } });
+    return items;
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    const result = await onSave(buildItems());
+    setSaving(false);
+    if (result.fail === 0) { setJustSaved(true); setTimeout(() => setJustSaved(false), 2000); }
     if (isEditingHistorical) onDone();
   };
 
@@ -747,8 +756,13 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, queue,
       </div>
       <textarea placeholder="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
 
-      <button onClick={saveAll} style={{ padding: 14, borderRadius: 10, border: "none", background: ACCENT, color: "#06211D", fontWeight: 700 }}>
-        {isEditingHistorical ? "Save & return" : `Queue entry (${queue.length} pending)`}
+      <button onClick={handleSave} disabled={saving} style={{
+        padding: 14, borderRadius: 10, border: "none",
+        background: saving ? SLATE : pendingCount > 0 ? GOLD : ACCENT,
+        color: pendingCount > 0 && !saving ? "#332405" : "#06211D",
+        fontWeight: 700, cursor: saving ? "default" : "pointer",
+      }}>
+        {saving ? "Saving…" : pendingCount > 0 ? `Sync now (${pendingCount} pending)` : justSaved ? "Saved ✓" : isEditingHistorical ? "Save & return" : "Save"}
       </button>
     </div>
   );
@@ -793,7 +807,7 @@ export default function WorkoutTracker() {
       storeSet("calendarNotes", next);
       return next;
     });
-    addToQueue({ action: "logNote", data: { Date: ds, Note: text } });
+    pushQueue([{ action: "logNote", data: { Date: ds, Note: text } }]);
   };
 
   const onSavePlanOverride = (key, rows) => {
@@ -844,7 +858,7 @@ export default function WorkoutTracker() {
   }, []);
 
   useEffect(() => { if (settings.apiUrl) fetchAll(settings); }, [settings.apiUrl]);
-  useEffect(() => { const t = setInterval(() => fetchAll(settings), 5 * 60 * 1000); return () => clearInterval(t); }, [settings, fetchAll]);
+  useEffect(() => { const t = setInterval(() => fetchAll(settings), (settings.refreshMinutes || 3) * 60 * 1000); return () => clearInterval(t); }, [settings, fetchAll]);
 
   const activeSlides = SLIDE_DEFS.filter((s) => settings.slides.includes(s.id));
   useEffect(() => { if (slide >= activeSlides.length) setSlide(0); }, [activeSlides.length]);
@@ -854,7 +868,23 @@ export default function WorkoutTracker() {
     return () => clearInterval(t);
   }, [mode, settings.slideshowEnabled, settings.slideSeconds, activeSlides.length]);
 
-  const addToQueue = (item) => setQueue((q) => { const nq = [...q, item]; storeSet("queue", nq); return nq; });
+  const queueKey = (item) => {
+    const d = item.data;
+    if (item.action === "logDaily") return `logDaily:${d.Date}`;
+    if (item.action === "logExercise") return `logExercise:${d.Date}:${d.ExerciseName}:${d.SetNumber}`;
+    if (item.action === "logRun") return `logRun:${d.Date}`;
+    if (item.action === "logNote") return `logNote:${d.Date}`;
+    return JSON.stringify(item);
+  };
+  const mergeQueue = (current, items) => {
+    let q = [...current];
+    items.forEach((item) => {
+      const key = queueKey(item);
+      q = q.filter((i) => queueKey(i) !== key);
+      q.push(item);
+    });
+    return q;
+  };
 
   const postOne = async (item) => {
     const res = await fetch(settings.apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ key: settings.apiKey, ...item }) });
@@ -862,17 +892,25 @@ export default function WorkoutTracker() {
     if (data.error) throw new Error(data.error);
   };
 
-  const syncNow = async () => {
-    if (!settings.apiUrl) { setSyncMsg("Set your Apps Script URL and key in Settings first."); setShowSettings(true); return; }
+  // Single entry point for both "save this entry" and "manual refresh": merges any
+  // new items into the queue (replacing same-key items so nothing stacks), pushes
+  // everything pending to the sheet, then re-fetches so every screen reflects it.
+  const pushQueue = async (itemsToMerge) => {
     setSyncing(true); setSyncMsg("");
-    const q = [...queue];
-    let ok = 0, fail = 0;
-    for (const item of q) { try { await postOne(item); ok++; } catch { fail++; } }
-    const remaining = fail > 0 ? q.slice(ok) : [];
+    const merged = itemsToMerge ? mergeQueue(queue, itemsToMerge) : [...queue];
+    if (itemsToMerge) { setQueue(merged); storeSet("queue", merged); }
+    if (!settings.apiUrl) {
+      setSyncing(false);
+      setSyncMsg(itemsToMerge ? "Saved locally — add your Apps Script URL in Settings to sync" : "Set your Apps Script URL and key in Settings first.");
+      return { ok: 0, fail: merged.length };
+    }
+    let ok = 0; const remaining = [];
+    for (const item of merged) { try { await postOne(item); ok++; } catch { remaining.push(item); } }
     setQueue(remaining); storeSet("queue", remaining);
     await fetchAll(settings);
     setSyncing(false);
-    setSyncMsg(fail > 0 ? `Synced ${ok}, ${fail} failed — check URL/key or network` : ok > 0 ? `Synced ${ok} item${ok === 1 ? "" : "s"}` : "Nothing to sync");
+    setSyncMsg(remaining.length > 0 ? `Saved ${ok}, ${remaining.length} pending — will retry` : ok > 0 ? `Saved ${ok} item${ok === 1 ? "" : "s"}` : "Up to date");
+    return { ok, fail: remaining.length };
   };
 
   const now = new Date();
@@ -908,7 +946,7 @@ export default function WorkoutTracker() {
         <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
           {syncMsg && <span style={{ fontSize: 11, color: SUB, maxWidth: 200, textAlign: "right" }}>{syncMsg}</span>}
-          <RefreshCw size={18} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB }} onClick={syncNow} />
+          <RefreshCw size={18} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
           {mode === "display" ? <Smartphone size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={18} style={{ cursor: "pointer", color: SUB }} onClick={finishEdit} />}
           <Settings size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => setShowSettings(true)} />
         </div>
@@ -929,7 +967,7 @@ export default function WorkoutTracker() {
         </div>
       ) : (
         <div style={{ height: "calc(100% - 45px)" }}>
-          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} queue={queue} addToQueue={addToQueue} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} />
+          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} pendingCount={queue.length} />
         </div>
       )}
 
