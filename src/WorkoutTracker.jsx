@@ -403,7 +403,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
   const today = fmtDate(new Date());
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 14, position: "relative", overflowY: "auto" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "16px 20px", gap: 10, position: "relative", boxSizing: "border-box" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontSize: 24, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -415,7 +415,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 13, color: SUB, textTransform: "uppercase" }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "minmax(92px, 1fr)", gap: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "minmax(0, 1fr)", gap: 6, flex: "1 1 0", minHeight: 0 }}>
         {cells.map((d, i) => {
           if (!d) return <div key={i} />;
           const wk = getWeekNumber(d, anchorDate);
@@ -427,7 +427,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
           const isPast = ds < today, isToday = ds === today;
           const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
           return (
-            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 12 }}>
+            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 12, overflow: "hidden", minHeight: 0, minWidth: 0 }}>
               <div style={{ fontSize: 15, fontWeight: 700 }}>{d.getDate()}</div>
               <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 12 }}>{label}</div>
               {note && <div style={{ color: GOLD, fontSize: 11, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
