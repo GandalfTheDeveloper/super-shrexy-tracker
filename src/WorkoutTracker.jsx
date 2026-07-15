@@ -347,7 +347,7 @@ function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isP
   const grouped = exerciseEntries.reduce((acc, r) => { (acc[r.ExerciseName] = acc[r.ExerciseName] || []).push(r); return acc; }, {});
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 25 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: 22, width: 340, maxHeight: "85%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: "22px 22px 40px 22px", width: 340, maxHeight: "85%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 15 }}>{new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</div>
           <X size={18} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
@@ -539,7 +539,7 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: 24, width: 380, maxHeight: "90%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: "24px 24px 44px 24px", width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 18 }}>Settings</div>
           <X size={20} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
@@ -613,7 +613,7 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: 22, width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: "22px 22px 40px 22px", width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 17 }}>Edit workouts</div>
           <X size={20} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
@@ -707,7 +707,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   };
 
   return (
-    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", height: "100%" }}>
+    <div style={{ padding: "20px 20px calc(20px + env(safe-area-inset-bottom, 0px) + 100px) 20px", display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
       {isEditingHistorical && (
         <button onClick={onDone} style={{ display: "flex", alignItems: "center", gap: 4, alignSelf: "flex-start", fontSize: 13, color: SUB, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
           <ChevronLeft size={16} /> Back
@@ -939,21 +939,21 @@ export default function WorkoutTracker() {
   };
 
   return (
-    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden" }}>
+    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <style>{`.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}} input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}`}</style>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: `1px solid ${LINE}` }}>
-        <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
-        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${LINE}` }}>
+        <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
+        <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
           {syncMsg && <span style={{ fontSize: 11, color: SUB, maxWidth: 200, textAlign: "right" }}>{syncMsg}</span>}
-          <RefreshCw size={18} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
-          {mode === "display" ? <Smartphone size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={18} style={{ cursor: "pointer", color: SUB }} onClick={finishEdit} />}
-          <Settings size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => setShowSettings(true)} />
+          <RefreshCw size={30} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB, padding: 6 }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
+          {mode === "display" ? <Smartphone size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={finishEdit} />}
+          <Settings size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => setShowSettings(true)} />
         </div>
       </div>
 
       {mode === "display" ? (
-        <div style={{ height: "calc(100% - 45px)", position: "relative" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           {slidesToShow[slide]}
           {slidesToShow.length > 1 && (
             <>
@@ -966,7 +966,7 @@ export default function WorkoutTracker() {
           )}
         </div>
       ) : (
-        <div style={{ height: "calc(100% - 45px)" }}>
+        <div style={{ flex: "1 1 auto", minHeight: 0 }}>
           <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} pendingCount={queue.length} />
         </div>
       )}
