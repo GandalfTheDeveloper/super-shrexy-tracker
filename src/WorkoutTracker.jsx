@@ -955,10 +955,10 @@ export default function WorkoutTracker() {
   };
 
   return (
-    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", paddingLeft: "env(safe-area-inset-left, 0px)", paddingRight: "env(safe-area-inset-right, 0px)", boxSizing: "border-box" }}>
       <style>{`.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}} input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}`}</style>
 
-      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${LINE}` }}>
+      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(12px + env(safe-area-inset-top, 0px)) 16px 12px 16px", borderBottom: `1px solid ${LINE}` }}>
         <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
         <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
           {syncMsg && <span style={{ fontSize: 11, color: SUB, maxWidth: 200, textAlign: "right" }}>{syncMsg}</span>}
