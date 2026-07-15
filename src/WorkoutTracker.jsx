@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Settings, ChevronLeft, ChevronRight, Smartphone, Monitor, RefreshCw, Plus, Trash2, X } from "lucide-react";
+import { Settings, ChevronLeft, ChevronRight, Smartphone, Monitor, RefreshCw, Plus, Trash2, X, Maximize2, Minimize2 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 
 const PLAN_DAYS = [
@@ -785,7 +785,22 @@ export default function WorkoutTracker() {
   const [viewDate, setViewDate] = useState(new Date());
   const [showPlanEditor, setShowPlanEditor] = useState(false);
   const [editContext, setEditContext] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const touchStart = useRef(null);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -947,6 +962,7 @@ export default function WorkoutTracker() {
         <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
           {syncMsg && <span style={{ fontSize: 11, color: SUB, maxWidth: 200, textAlign: "right" }}>{syncMsg}</span>}
           <RefreshCw size={30} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB, padding: 6 }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
+          {isFullscreen ? <Minimize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} /> : <Maximize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} />}
           {mode === "display" ? <Smartphone size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={finishEdit} />}
           <Settings size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => setShowSettings(true)} />
         </div>
