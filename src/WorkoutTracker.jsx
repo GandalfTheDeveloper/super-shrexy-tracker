@@ -788,6 +788,36 @@ export default function WorkoutTracker() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenSupported = typeof document !== "undefined" && !!document.fullscreenEnabled;
   const touchStart = useRef(null);
+  const wakeLockRef = useRef(null);
+
+  const requestWakeLock = async () => {
+    try {
+      if ("wakeLock" in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request("screen");
+      }
+    } catch {
+      // permission denied, unsupported, or backgrounded — silently skip
+    }
+  };
+  const releaseWakeLock = () => {
+    wakeLockRef.current?.release().catch(() => {});
+    wakeLockRef.current = null;
+  };
+
+  useEffect(() => {
+    if (mode === "display") requestWakeLock(); else releaseWakeLock();
+    return releaseWakeLock;
+  }, [mode]);
+
+  // Wake locks are auto-released when the tab is hidden (e.g. screen briefly
+  // dimmed, app backgrounded) — re-acquire once it's visible again.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && mode === "display" && !wakeLockRef.current) requestWakeLock();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [mode]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
