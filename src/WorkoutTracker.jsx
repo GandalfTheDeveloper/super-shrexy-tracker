@@ -134,6 +134,12 @@ function getWeekNumber(date, anchorStr) {
   return mod === 0 ? 1 : 2;
 }
 const parseTargetSets = (ts) => { const n = parseInt(ts, 10); return isNaN(n) ? 1 : n; };
+const effectiveStatus = (planType, entry) => entry?.CompletionStatus || (planType === "Rest" ? "Complete" : "None");
+function getPlanTypeForDate(dateStr, anchorDate) {
+  const d = new Date(dateStr + "T00:00:00");
+  const wk = getWeekNumber(d, anchorDate);
+  return PLAN_DAYS.find((p) => p.Week === wk && p.DayOfWeek === dayName(d))?.Type;
+}
 const planKey = (wk, dn) => `${wk}-${dn}`;
 function getEffectiveExercises(overrides, wk, dn) {
   const key = planKey(wk, dn);
@@ -223,6 +229,51 @@ function generateDemoData() {
   return { daily, exercise, run };
 }
 
+function getLastNoteForSameCycleDay(dailyLog, dateStr, anchorDate) {
+  const d = new Date(dateStr + "T00:00:00");
+  const wk = getWeekNumber(d, anchorDate);
+  const dn = dayName(d);
+  const candidates = dailyLog
+    .filter((r) => r.Date < dateStr && r.Notes)
+    .filter((r) => {
+      const rd = new Date(r.Date + "T00:00:00");
+      return getWeekNumber(rd, anchorDate) === wk && dayName(rd) === dn;
+    })
+    .sort((a, b) => b.Date.localeCompare(a.Date));
+  return candidates[0]?.Notes || "";
+}
+
+function computePace(distance, time) {
+  const dist = parseFloat(distance);
+  if (!dist || dist <= 0 || !time) return "";
+  const parts = String(time).split(":").map(Number);
+  let totalSeconds;
+  if (parts.length === 2 && !parts.some(isNaN)) totalSeconds = parts[0] * 60 + parts[1];
+  else if (parts.length === 1 && !isNaN(parts[0])) totalSeconds = parts[0] * 60;
+  else return "";
+  const paceSeconds = totalSeconds / dist;
+  if (!isFinite(paceSeconds) || paceSeconds <= 0) return "";
+  const m = Math.floor(paceSeconds / 60);
+  const s = Math.round(paceSeconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function computeAutoStatus(setsObj, runD, isRunDay) {
+  const allRows = Object.values(setsObj).flat();
+  if (allRows.length > 0) {
+    const filled = allRows.filter((r) => r.reps && r.weight);
+    if (filled.length === 0) return isRunDay && (runD.Distance || runD.Time) ? "Partial" : "None";
+    if (filled.length === allRows.length) return "Complete";
+    return "Partial";
+  }
+  if (isRunDay) {
+    if (runD.Distance && runD.Time) return "Complete";
+    if (runD.Distance || runD.Time) return "Partial";
+    return "None";
+  }
+  return "None";
+}
+
 function rowPlaceholder(exerciseLog, exName, dateStr, rowIndex) {
   const session = getLastSession(exerciseLog, exName, dateStr);
   if (rowIndex === 0) return modeOrAverage(session);
@@ -248,6 +299,7 @@ const STATUS_OPTS = [{ value: "None", label: "None", color: REDC }, { value: "Pa
 
 function TodaySlide({ date, weekNum, planDay, exercises, dailyLog }) {
   const existing = dailyLog.find((r) => r.Date === fmtDate(date));
+  const eff = effectiveStatus(planDay?.Type, existing);
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 20, overflowY: "auto" }}>
       <div>
@@ -274,7 +326,7 @@ function TodaySlide({ date, weekNum, planDay, exercises, dailyLog }) {
         </div>
         <div>
           <div style={{ fontSize: 12, color: SUB, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Status</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: statusColor(existing?.CompletionStatus) }}>{existing?.CompletionStatus || "Not logged"}</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: statusColor(eff) }}>{eff === "None" ? "Not logged" : eff}</div>
         </div>
       </div>
       <div style={{ fontSize: 12, color: SUB, fontStyle: "italic" }}>Read-only display &middot; log sets, weight and notes from phone mode.</div>
@@ -293,11 +345,11 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 16, overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{label}</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>{label}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 15, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
@@ -310,19 +362,19 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
           const log = dailyLog.find((r) => r.Date === ds);
           const note = calendarNotes?.[ds];
           const isPast = ds < today, isToday = ds === today;
-          const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
+          const color = isPast || isToday ? statusColor(effectiveStatus(plan?.Type, log)) : LINE;
           return (
             <div key={ds} onClick={() => setEditingDate(ds)} style={{ cursor: "pointer", display: "flex", flexDirection: "column", background: CARD, borderRadius: 10, padding: 12, border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}` }}>
-              <div style={{ fontSize: 13, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
+              <div style={{ fontSize: 15, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
                 {exList.length > 0 ? exList.map((e, i) => (
-                  <div key={i} style={{ fontSize: 12.5, color: SUB, lineHeight: 1.5, display: "flex", gap: 4 }}>
+                  <div key={i} style={{ fontSize: 14.5, color: SUB, lineHeight: 1.5, display: "flex", gap: 4 }}>
                     <span style={{ color: GOLD, flexShrink: 0 }}>&#9656;</span>{e.ExerciseName}
                   </div>
-                )) : <div style={{ fontSize: 13, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
+                )) : <div style={{ fontSize: 15, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
               </div>
-              {note && <div style={{ fontSize: 12.5, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
+              {note && <div style={{ fontSize: 14.5, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 5, borderRadius: 3, background: (isPast || isToday) ? color : "transparent", marginTop: 8 }} />
             </div>
           );
@@ -331,6 +383,7 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
       {editingDate && (
         <DayDetailModal dateStr={editingDate} initialNote={calendarNotes?.[editingDate]}
           isPast={editingDate < today}
+          planType={getPlanTypeForDate(editingDate, anchorDate)}
           dailyEntry={dailyLog.find((r) => r.Date === editingDate)}
           exerciseEntries={exerciseLog.filter((r) => r.Date === editingDate)}
           onClose={() => setEditingDate(null)}
@@ -342,9 +395,10 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
   );
 }
 
-function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isPast, onSave, onClear, onClose, onEdit }) {
+function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isPast, planType, onSave, onClear, onClose, onEdit }) {
   const [text, setText] = useState(initialNote || "");
   const grouped = exerciseEntries.reduce((acc, r) => { (acc[r.ExerciseName] = acc[r.ExerciseName] || []).push(r); return acc; }, {});
+  const eff = effectiveStatus(planType, dailyEntry);
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 25 }}>
       <div style={{ background: CARD, borderRadius: 14, padding: "22px 22px 40px 22px", width: 340, maxHeight: "85%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
@@ -357,13 +411,13 @@ function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isP
           <div style={{ background: BG, borderRadius: 10, padding: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>What you did</div>
-              <button onClick={() => onEdit(dateStr)} style={{ fontSize: 11, color: ACCENT, background: "none", border: `1px solid ${ACCENT}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 700 }}>Edit</button>
+              {planType !== "Rest" && <button onClick={() => onEdit(dateStr)} style={{ fontSize: 11, color: ACCENT, background: "none", border: `1px solid ${ACCENT}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 700 }}>Edit</button>}
             </div>
             {dailyEntry ? (
               <>
                 <div style={{ display: "flex", gap: 16, marginBottom: Object.keys(grouped).length ? 10 : 0, fontSize: 13 }}>
                   <span>Weight: <b>{dailyEntry.Weight || "—"}</b></span>
-                  <span style={{ color: statusColor(dailyEntry.CompletionStatus) }}>{dailyEntry.CompletionStatus || "Not logged"}</span>
+                  <span style={{ color: statusColor(eff) }}>{eff}</span>
                 </div>
                 {dailyEntry.Notes && <div style={{ fontSize: 12, color: SUB, marginBottom: 10, fontStyle: "italic" }}>&ldquo;{dailyEntry.Notes}&rdquo;</div>}
                 {Object.entries(grouped).map(([name, rows]) => (
@@ -375,6 +429,8 @@ function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isP
                   </div>
                 ))}
               </>
+            ) : planType === "Rest" ? (
+              <div style={{ fontSize: 12, color: statusColor("Complete") }}>Rest day — nothing to log.</div>
             ) : <div style={{ fontSize: 12, color: SUB }}>Nothing logged for this day.</div>}
           </div>
         )}
@@ -405,14 +461,14 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "16px 20px", gap: 10, position: "relative", boxSizing: "border-box" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 15, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 13, color: SUB, textTransform: "uppercase" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 15, color: SUB, textTransform: "uppercase" }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "minmax(0, 1fr)", gap: 6, flex: "1 1 0", minHeight: 0 }}>
@@ -425,12 +481,12 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
           const log = dailyLog.find((r) => r.Date === ds);
           const note = calendarNotes?.[ds];
           const isPast = ds < today, isToday = ds === today;
-          const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
+          const color = isPast || isToday ? statusColor(effectiveStatus(plan?.Type, log)) : LINE;
           return (
-            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 12, overflow: "hidden", minHeight: 0, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700 }}>{d.getDate()}</div>
-              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 12 }}>{label}</div>
-              {note && <div style={{ color: GOLD, fontSize: 11, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
+            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 14, overflow: "hidden", minHeight: 0, minWidth: 0 }}>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{d.getDate()}</div>
+              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 14 }}>{label}</div>
+              {note && <div style={{ color: GOLD, fontSize: 13, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 4, borderRadius: 2, background: (isPast || isToday) ? color : "transparent" }} />
             </div>
           );
@@ -439,6 +495,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
       {editingDate && (
         <DayDetailModal dateStr={editingDate} initialNote={calendarNotes?.[editingDate]}
           isPast={editingDate < today}
+          planType={getPlanTypeForDate(editingDate, anchorDate)}
           dailyEntry={dailyLog.find((r) => r.Date === editingDate)}
           exerciseEntries={exerciseLog.filter((r) => r.Date === editingDate)}
           onClose={() => setEditingDate(null)}
@@ -451,7 +508,10 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
 }
 
 function ProgressSlide({ dailyLog, exerciseLog, runLog }) {
-  const [tab, setTab] = useState("weight");
+  const [tab, setTab] = useState(() => {
+    const opts = ["weight", "completion", "exercise", "run"];
+    return opts[Math.floor(Math.random() * opts.length)];
+  });
   const exerciseNames = useMemo(() => [...new Set(exerciseLog.map((r) => r.ExerciseName))], [exerciseLog]);
   const [exSel, setExSel] = useState("");
   useEffect(() => { if (!exSel && exerciseNames.length) setExSel(exerciseNames[0]); }, [exerciseNames]);
@@ -659,6 +719,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const existingDaily = dailyLog.find((r) => r.Date === dateStr);
 
   const [status, setStatus] = useState(existingDaily?.CompletionStatus || "None");
+  const [statusManual, setStatusManual] = useState(!!existingDaily?.CompletionStatus);
   const [weight, setWeight] = useState(existingDaily?.Weight || "");
   const [notes, setNotes] = useState(existingDaily?.Notes || "");
   const [sets, setSets] = useState({});
@@ -679,11 +740,20 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
     setSets(initial);
     const dailyForDate = dailyLog.find((r) => r.Date === dateStr);
     setStatus(dailyForDate?.CompletionStatus || "None");
+    setStatusManual(!!dailyForDate?.CompletionStatus);
     setWeight(dailyForDate?.Weight || "");
     setNotes(dailyForDate?.Notes || "");
     const existingRun = runLog.find((r) => r.Date === dateStr);
     setRunData(existingRun ? { Distance: existingRun.Distance || "", Time: existingRun.Time || "", Pace: existingRun.Pace || "" } : { Distance: "", Time: "", Pace: "" });
   }, [dateStr]);
+
+  // Auto-derive completion status from what's actually been filled in, unless
+  // the person has explicitly picked a status themselves for this date.
+  useEffect(() => {
+    if (!statusManual) setStatus(computeAutoStatus(sets, runData, isRunDay));
+  }, [sets, runData, isRunDay, statusManual]);
+
+  const notesPlaceholder = getLastNoteForSameCycleDay(dailyLog, dateStr, anchorDate);
 
   const addSetRow = (exName) => setSets((s) => ({ ...s, [exName]: [...(s[exName] || []), { reps: "", weight: "" }] }));
   const updateSetRow = (exName, i, field, val) => setSets((s) => ({ ...s, [exName]: s[exName].map((r, idx) => (idx === i ? { ...r, [field]: val } : r)) }));
@@ -743,18 +813,18 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
         <div style={{ background: CARD, borderRadius: 10, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Run</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunData({ ...runData, Distance: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-            <input placeholder="time (mm:ss)" value={runData.Time} onChange={(e) => setRunData({ ...runData, Time: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-            <input placeholder="pace (mm:ss)" value={runData.Pace} onChange={(e) => setRunData({ ...runData, Pace: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunData((prev) => ({ ...prev, Distance: e.target.value, Pace: computePace(e.target.value, prev.Time) }))} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input placeholder="time (mm:ss)" value={runData.Time} onChange={(e) => setRunData((prev) => ({ ...prev, Time: e.target.value, Pace: computePace(prev.Distance, e.target.value) }))} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input placeholder="pace (auto)" value={runData.Pace} readOnly title="Calculated automatically from distance and time" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: SUB, cursor: "default" }} />
           </div>
         </div>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <input placeholder="body weight" value={weight} onChange={(e) => setWeight(e.target.value)} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
-        <Segmented value={status} onChange={setStatus} options={STATUS_OPTS} />
+        <Segmented value={status} onChange={(v) => { setStatus(v); setStatusManual(true); }} options={STATUS_OPTS} />
       </div>
-      <textarea placeholder="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
+      <textarea placeholder={notesPlaceholder || "notes"} value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
 
       <button onClick={handleSave} disabled={saving} style={{
         padding: 14, borderRadius: 10, border: "none",
