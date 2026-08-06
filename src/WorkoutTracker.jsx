@@ -786,34 +786,40 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
       <input type="date" value={dateStr} onChange={(e) => setDate(new Date(e.target.value + "T00:00:00"))} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, fontSize: 15 }} />
       <div style={{ fontSize: 13, color: ACCENT, fontWeight: 700 }}>Week {wk} · {planDay?.Type} · {planDay?.MuscleGroups}</div>
 
-      {exercises.map((ex) => (
-        <div key={ex.ExerciseName} style={{ background: CARD, borderRadius: 10, padding: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <span style={{ fontWeight: 600, fontSize: 14 }}>{ex.ExerciseName}</span>
-            <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+      {exercises.map((ex) => {
+        const exRows = sets[ex.ExerciseName] || [];
+        const filledReps = exRows.filter((r) => r.reps).length;
+        const exStatus = filledReps === 0 ? null : filledReps === exRows.length ? "Complete" : "Partial";
+        const stripeColor = exStatus ? statusColor(exStatus) : LINE;
+        return (
+          <div key={ex.ExerciseName} style={{ background: CARD, borderRadius: 10, padding: 12, borderLeft: `4px solid ${stripeColor}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontWeight: 600, fontSize: 14, color: exStatus ? statusColor(exStatus) : INK }}>{ex.ExerciseName}</span>
+              <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+            </div>
+            {exRows.map((row, i) => {
+              const ph = rowPlaceholder(exerciseLog, ex.ExerciseName, dateStr, i);
+              return (
+                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
+                  <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
+                </div>
+              );
+            })}
+            <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
+              <Plus size={14} /> Add set
+            </button>
           </div>
-          {(sets[ex.ExerciseName] || []).map((row, i) => {
-            const ph = rowPlaceholder(exerciseLog, ex.ExerciseName, dateStr, i);
-            return (
-              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
-                <input placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                <input placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
-              </div>
-            );
-          })}
-          <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
-            <Plus size={14} /> Add set
-          </button>
-        </div>
-      ))}
+        );
+      })}
 
       {isRunDay && (
         <div style={{ background: CARD, borderRadius: 10, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Run</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunData((prev) => ({ ...prev, Distance: e.target.value, Pace: computePace(e.target.value, prev.Time) }))} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input inputMode="decimal" placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunData((prev) => ({ ...prev, Distance: e.target.value, Pace: computePace(e.target.value, prev.Time) }))} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
             <input placeholder="time (mm:ss)" value={runData.Time} onChange={(e) => setRunData((prev) => ({ ...prev, Time: e.target.value, Pace: computePace(prev.Distance, e.target.value) }))} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
             <input placeholder="pace (auto)" value={runData.Pace} readOnly title="Calculated automatically from distance and time" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: SUB, cursor: "default" }} />
           </div>
@@ -821,7 +827,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <input placeholder="body weight" value={weight} onChange={(e) => setWeight(e.target.value)} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
+        <input inputMode="decimal" placeholder="body weight" value={weight} onChange={(e) => setWeight(e.target.value)} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
         <Segmented value={status} onChange={(v) => { setStatus(v); setStatusManual(true); }} options={STATUS_OPTS} />
       </div>
       <textarea placeholder={notesPlaceholder || "notes"} value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
