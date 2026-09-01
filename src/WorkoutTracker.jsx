@@ -100,11 +100,6 @@ const RAW_EX = `1,Monday,1,Back,Cable Rows,3,12
 2,Sunday,14,Triceps,Overhead Tricep Extension,3,12
 2,Sunday,15,Triceps,Face Pulls,2,12`;
 
-const PLAN_EXERCISES = RAW_EX.split("\n").map((line) => {
-  const [Week, DayOfWeek, Order, MuscleGroup, ExerciseName, TargetSets, TargetReps] = line.split(",");
-  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps, ExerciseType: classifyExerciseType(ExerciseName, TargetReps) };
-});
-
 // "weighted" (reps + weight), "reps" (bodyweight, reps only), "time" (timer, seconds only)
 const REPS_ONLY_NAMES = new Set(["Hanging Leg Raises", "Ab Roller", "Slow Pushups"]);
 function classifyExerciseType(name, targetReps) {
@@ -112,6 +107,11 @@ function classifyExerciseType(name, targetReps) {
   if (REPS_ONLY_NAMES.has(name)) return "reps";
   return "weighted";
 }
+
+const PLAN_EXERCISES = RAW_EX.split("\n").map((line) => {
+  const [Week, DayOfWeek, Order, MuscleGroup, ExerciseName, TargetSets, TargetReps] = line.split(",");
+  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps, ExerciseType: classifyExerciseType(ExerciseName, TargetReps) };
+});
 
 // ---- Palette: dark teal base, turquoise / mustard gold / red accents ----
 const BG = "#0D1917";
@@ -1000,6 +1000,8 @@ export default function WorkoutTracker() {
     }
   };
 
+  const [hydrated, setHydrated] = useState(false);
+
   useEffect(() => {
     (async () => {
       const s = await storeGet("settings", null);
@@ -1010,6 +1012,7 @@ export default function WorkoutTracker() {
       setQueue(await storeGet("queue", []));
       setCalendarNotes(await storeGet("calendarNotes", {}));
       setPlanOverrides(await storeGet("planOverrides", {}));
+      setHydrated(true);
     })();
   }, []);
 
@@ -1192,6 +1195,14 @@ export default function WorkoutTracker() {
     if (Math.abs(dx) > 60) setSlide((s) => (dx < 0 ? (s + 1) % slidesToShow.length : (s + slidesToShow.length - 1) % slidesToShow.length));
     touchStart.current = null;
   };
+
+  if (!hydrated) {
+    return (
+      <div style={{ width: "100%", height: "100vh", background: BG, color: SUB, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, -apple-system, sans-serif", fontSize: 14 }}>
+        Loading…
+      </div>
+    );
+  }
 
   return (
     <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", paddingLeft: "env(safe-area-inset-left, 0px)", paddingRight: "env(safe-area-inset-right, 0px)", boxSizing: "border-box" }}>
