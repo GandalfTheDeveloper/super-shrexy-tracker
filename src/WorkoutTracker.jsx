@@ -102,8 +102,16 @@ const RAW_EX = `1,Monday,1,Back,Cable Rows,3,12
 
 const PLAN_EXERCISES = RAW_EX.split("\n").map((line) => {
   const [Week, DayOfWeek, Order, MuscleGroup, ExerciseName, TargetSets, TargetReps] = line.split(",");
-  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps };
+  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps, ExerciseType: classifyExerciseType(ExerciseName, TargetReps) };
 });
+
+// "weighted" (reps + weight), "reps" (bodyweight, reps only), "time" (timer, seconds only)
+const REPS_ONLY_NAMES = new Set(["Hanging Leg Raises", "Ab Roller", "Slow Pushups"]);
+function classifyExerciseType(name, targetReps) {
+  if (/s$/i.test(String(targetReps || "").trim())) return "time";
+  if (REPS_ONLY_NAMES.has(name)) return "reps";
+  return "weighted";
+}
 
 // ---- Palette: dark teal base, turquoise / mustard gold / red accents ----
 const BG = "#0D1917";
@@ -143,7 +151,7 @@ function getPlanTypeForDate(dateStr, anchorDate) {
 const planKey = (wk, dn) => `${wk}-${dn}`;
 function getEffectiveExercises(overrides, wk, dn) {
   const key = planKey(wk, dn);
-  if (overrides && overrides[key]) return overrides[key].map((e, i) => ({ ...e, Week: wk, DayOfWeek: dn, Order: i + 1 }));
+  if (overrides && overrides[key]) return overrides[key].map((e, i) => ({ ...e, Week: wk, DayOfWeek: dn, Order: i + 1, ExerciseType: e.ExerciseType || "weighted" }));
   return PLAN_EXERCISES.filter((e) => e.Week === wk && e.DayOfWeek === dn).sort((a, b) => a.Order - b.Order);
 }
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
@@ -258,10 +266,18 @@ function computePace(distance, time) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function formatSecondsClock(totalSeconds) {
+  const n = Number(totalSeconds);
+  if (!n || n < 0) return "0:00";
+  const m = Math.floor(n / 60);
+  const s = Math.floor(n % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function computeAutoStatus(setsObj, runD, isRunDay) {
   const allRows = Object.values(setsObj).flat();
   if (allRows.length > 0) {
-    const filled = allRows.filter((r) => r.reps && r.weight);
+    const filled = allRows.filter((r) => r.reps);
     if (filled.length === 0) return isRunDay && (runD.Distance || runD.Time) ? "Partial" : "None";
     if (filled.length === allRows.length) return "Complete";
     return "Partial";
@@ -657,16 +673,16 @@ const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "S
 function PlanEditorModal({ planOverrides, onSave, onClose }) {
   const [week, setWeek] = useState(1);
   const [day, setDay] = useState("Monday");
-  const [rows, setRows] = useState(() => getEffectiveExercises(planOverrides, 1, "Monday").map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps })));
+  const [rows, setRows] = useState(() => getEffectiveExercises(planOverrides, 1, "Monday").map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps, ExerciseType: e.ExerciseType || "weighted" })));
 
-  const loadDay = (wk, dn) => setRows(getEffectiveExercises(planOverrides, wk, dn).map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps })));
+  const loadDay = (wk, dn) => setRows(getEffectiveExercises(planOverrides, wk, dn).map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps, ExerciseType: e.ExerciseType || "weighted" })));
 
   const changeWeek = (w) => { setWeek(w); loadDay(w, day); };
   const changeDay = (d) => { setDay(d); loadDay(week, d); };
 
   const updateRow = (i, field, val) => setRows((r) => r.map((row, idx) => (idx === i ? { ...row, [field]: val } : row)));
   const removeRow = (i) => setRows((r) => r.filter((_, idx) => idx !== i));
-  const addRow = () => setRows((r) => [...r, { ExerciseName: "", TargetSets: "3", TargetReps: "10" }]);
+  const addRow = () => setRows((r) => [...r, { ExerciseName: "", TargetSets: "3", TargetReps: "10", ExerciseType: "weighted" }]);
 
   const save = () => { onSave(planKey(week, day), rows.filter((r) => r.ExerciseName.trim())); };
   const resetDefault = () => { onSave(planKey(week, day), null); loadDay(week, day); };
@@ -688,11 +704,18 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
         </div>
 
         {rows.map((row, i) => (
-          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input value={row.ExerciseName} onChange={(e) => updateRow(i, "ExerciseName", e.target.value)} placeholder="exercise name" style={{ flex: 3, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-            <input value={row.TargetSets} onChange={(e) => updateRow(i, "TargetSets", e.target.value)} placeholder="sets" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-            <input value={row.TargetReps} onChange={(e) => updateRow(i, "TargetReps", e.target.value)} placeholder="reps" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-            <Trash2 size={16} style={{ color: REDC, cursor: "pointer", flexShrink: 0 }} onClick={() => removeRow(i)} />
+          <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 8, borderBottom: `1px solid ${LINE}` }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input value={row.ExerciseName} onChange={(e) => updateRow(i, "ExerciseName", e.target.value)} placeholder="exercise name" style={{ flex: 3, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+              <input value={row.TargetSets} onChange={(e) => updateRow(i, "TargetSets", e.target.value)} placeholder="sets" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+              <input value={row.TargetReps} onChange={(e) => updateRow(i, "TargetReps", e.target.value)} placeholder="reps" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+              <Trash2 size={16} style={{ color: REDC, cursor: "pointer", flexShrink: 0 }} onClick={() => removeRow(i)} />
+            </div>
+            <select value={row.ExerciseType} onChange={(e) => updateRow(i, "ExerciseType", e.target.value)} style={{ padding: 6, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: SUB, fontSize: 12 }}>
+              <option value="weighted">Reps + weight</option>
+              <option value="reps">Reps only (bodyweight)</option>
+              <option value="time">Time-based (e.g. plank)</option>
+            </select>
           </div>
         ))}
         <button onClick={addRow} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer" }}>
@@ -709,7 +732,7 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
   );
 }
 
-function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, planOverrides, isEditingHistorical, onDone, onSave, pendingCount }) {
+function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, queue, planOverrides, isEditingHistorical, onDone, onSave, pendingCount }) {
   const wk = getWeekNumber(date, anchorDate);
   const dn = dayName(date);
   const dateStr = fmtDate(date);
@@ -726,25 +749,45 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const [runData, setRunData] = useState({ Distance: "", Time: "", Pace: "" });
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [timerElapsed, setTimerElapsed] = useState({});
+  const [timerRunning, setTimerRunning] = useState({});
+  const timerIntervals = useRef({});
+
+  useEffect(() => () => { Object.values(timerIntervals.current).forEach(clearInterval); }, []);
 
   useEffect(() => {
+    // Anything still sitting in the local sync queue for this date is the most
+    // up-to-date version of that data — layer it on top of confirmed synced data
+    // so reopening a day never looks like the entry vanished while unsynced.
+    const pendingForDate = (queue || []).filter((item) => item.data.Date === dateStr);
+    const pendingDaily = [...pendingForDate].reverse().find((i) => i.action === "logDaily")?.data;
+    const pendingRun = [...pendingForDate].reverse().find((i) => i.action === "logRun")?.data;
+    const pendingExercise = pendingForDate.filter((i) => i.action === "logExercise");
+
     const initial = {};
     exercises.forEach((ex) => {
-      const existingRows = exerciseLog.filter((r) => r.Date === dateStr && r.ExerciseName === ex.ExerciseName).sort((a, b) => Number(a.SetNumber) - Number(b.SetNumber));
-      const count = Math.max(parseTargetSets(ex.TargetSets), existingRows.length);
-      initial[ex.ExerciseName] = Array.from({ length: count }, (_, i) => {
-        const found = existingRows.find((r) => Number(r.SetNumber) === i + 1);
-        return found ? { reps: String(found.Reps), weight: String(found.Weight) } : { reps: "", weight: "" };
-      });
+      const existingRows = exerciseLog.filter((r) => r.Date === dateStr && r.ExerciseName === ex.ExerciseName);
+      const pendingRows = pendingExercise.filter((i) => i.data.ExerciseName === ex.ExerciseName).map((i) => i.data);
+      const bySet = {};
+      existingRows.forEach((r) => { bySet[Number(r.SetNumber)] = { reps: String(r.Reps ?? ""), weight: String(r.Weight ?? "") }; });
+      pendingRows.forEach((r) => { bySet[Number(r.SetNumber)] = { reps: String(r.Reps ?? ""), weight: String(r.Weight ?? "") }; });
+      const maxSet = Math.max(parseTargetSets(ex.TargetSets), ...Object.keys(bySet).map(Number), 0);
+      initial[ex.ExerciseName] = Array.from({ length: maxSet }, (_, i) => bySet[i + 1] || { reps: "", weight: "" });
     });
     setSets(initial);
-    const dailyForDate = dailyLog.find((r) => r.Date === dateStr);
+
+    const dailyForDate = pendingDaily || dailyLog.find((r) => r.Date === dateStr);
     setStatus(dailyForDate?.CompletionStatus || "None");
-    setStatusManual(!!dailyForDate?.CompletionStatus);
+    setStatusManual(!!pendingDaily?.CompletionStatus || !!dailyLog.find((r) => r.Date === dateStr)?.CompletionStatus);
     setWeight(dailyForDate?.Weight || "");
     setNotes(dailyForDate?.Notes || "");
-    const existingRun = runLog.find((r) => r.Date === dateStr);
+
+    const existingRun = pendingRun || runLog.find((r) => r.Date === dateStr);
     setRunData(existingRun ? { Distance: existingRun.Distance || "", Time: existingRun.Time || "", Pace: existingRun.Pace || "" } : { Distance: "", Time: "", Pace: "" });
+
+    setTimerElapsed({}); setTimerRunning({});
+    Object.values(timerIntervals.current).forEach(clearInterval);
+    timerIntervals.current = {};
   }, [dateStr]);
 
   // Auto-derive completion status from what's actually been filled in, unless
@@ -758,6 +801,36 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const addSetRow = (exName) => setSets((s) => ({ ...s, [exName]: [...(s[exName] || []), { reps: "", weight: "" }] }));
   const updateSetRow = (exName, i, field, val) => setSets((s) => ({ ...s, [exName]: s[exName].map((r, idx) => (idx === i ? { ...r, [field]: val } : r)) }));
   const removeSetRow = (exName, i) => setSets((s) => ({ ...s, [exName]: s[exName].filter((_, idx) => idx !== i) }));
+
+  const toggleTimer = (exName, i) => {
+    const key = `${exName}__${i}`;
+    if (timerRunning[key]) {
+      clearInterval(timerIntervals.current[key]);
+      delete timerIntervals.current[key];
+      setTimerRunning((r) => ({ ...r, [key]: false }));
+      const secs = timerElapsed[key] || 0;
+      updateSetRow(exName, i, "reps", String(secs));
+    } else {
+      const startAt = Number(sets[exName]?.[i]?.reps) || 0;
+      setTimerElapsed((e) => ({ ...e, [key]: startAt }));
+      setTimerRunning((r) => ({ ...r, [key]: true }));
+      timerIntervals.current[key] = setInterval(() => {
+        setTimerElapsed((e) => ({ ...e, [key]: (e[key] || 0) + 1 }));
+      }, 1000);
+    }
+  };
+
+  const handleNotesFocus = () => { if (!notes) setNotes("• "); };
+  const handleNotesKeyDown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const el = e.target;
+    const start = el.selectionStart, end = el.selectionEnd;
+    const insertion = "\n• ";
+    const newValue = notes.slice(0, start) + insertion + notes.slice(end);
+    setNotes(newValue);
+    requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + insertion.length; });
+  };
 
   const buildItems = () => {
     const items = [{ action: "logDaily", data: { Date: dateStr, Weight: weight, CompletionStatus: status, Notes: notes } }];
@@ -789,21 +862,37 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
       {exercises.map((ex) => {
         const exRows = sets[ex.ExerciseName] || [];
         const filledReps = exRows.filter((r) => r.reps).length;
-        const exStatus = filledReps === 0 ? null : filledReps === exRows.length ? "Complete" : "Partial";
-        const stripeColor = exStatus ? statusColor(exStatus) : LINE;
+        const exStatus = filledReps === 0 ? "None" : filledReps === exRows.length ? "Complete" : "Partial";
+        const stripeColor = statusColor(exStatus);
+        const type = ex.ExerciseType || "weighted";
         return (
           <div key={ex.ExerciseName} style={{ background: CARD, borderRadius: 10, padding: 12, borderLeft: `4px solid ${stripeColor}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 14, color: exStatus ? statusColor(exStatus) : INK }}>{ex.ExerciseName}</span>
+              <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
               <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
             </div>
             {exRows.map((row, i) => {
               const ph = rowPlaceholder(exerciseLog, ex.ExerciseName, dateStr, i);
+              const timerKey = `${ex.ExerciseName}__${i}`;
+              const isTiming = timerRunning[timerKey];
               return (
                 <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
                   <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
-                  <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                  <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  {type === "time" ? (
+                    <>
+                      <div style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: isTiming ? ACCENT : INK, fontFamily: "ui-monospace, Menlo, monospace" }}>
+                        {isTiming ? formatSecondsClock(timerElapsed[timerKey]) : row.reps ? formatSecondsClock(row.reps) : ph.reps ? `${formatSecondsClock(ph.reps)} last time` : "0:00"}
+                      </div>
+                      <button onClick={() => toggleTimer(ex.ExerciseName, i)} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: isTiming ? REDC : ACCENT, color: isTiming ? "#fff" : "#06211D", fontWeight: 700, cursor: "pointer" }}>
+                        {isTiming ? "Stop" : "Start"}
+                      </button>
+                    </>
+                  ) : (
+                    <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  )}
+                  {type === "weighted" && (
+                    <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  )}
                   <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
                 </div>
               );
@@ -830,7 +919,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
         <input inputMode="decimal" placeholder="body weight" value={weight} onChange={(e) => setWeight(e.target.value)} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
         <Segmented value={status} onChange={(v) => { setStatus(v); setStatusManual(true); }} options={STATUS_OPTS} />
       </div>
-      <textarea placeholder={notesPlaceholder || "notes"} value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
+      <textarea placeholder={notesPlaceholder || "notes"} value={notes} onChange={(e) => setNotes(e.target.value)} onFocus={handleNotesFocus} onKeyDown={handleNotesKeyDown} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
 
       <button onClick={handleSave} disabled={saving} style={{
         padding: 14, borderRadius: 10, border: "none",
@@ -854,6 +943,8 @@ export default function WorkoutTracker() {
   const [exerciseLog, setExerciseLog] = useState([]);
   const [runLog, setRunLog] = useState([]);
   const [queue, setQueue] = useState([]);
+  const queueRef = useRef([]);
+  useEffect(() => { queueRef.current = queue; }, [queue]);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [calendarNotes, setCalendarNotes] = useState({});
@@ -964,8 +1055,10 @@ export default function WorkoutTracker() {
 
   const fetchAll = useCallback(async (s) => {
     if (!s.apiUrl || !s.apiKey) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
     try {
-      const res = await fetch(`${s.apiUrl}?key=${encodeURIComponent(s.apiKey)}&action=getAll`);
+      const res = await fetch(`${s.apiUrl}?key=${encodeURIComponent(s.apiKey)}&action=getAll`, { signal: controller.signal });
       const data = await res.json();
       if (data.error) { setSyncMsg(`Fetch error: ${data.error}`); return; }
       setDailyLog(data.dailyLog || []); setExerciseLog(data.exerciseLog || []); setRunLog(data.runLog || []);
@@ -976,7 +1069,7 @@ export default function WorkoutTracker() {
         setCalendarNotes(notesObj);
         storeSet("calendarNotes", notesObj);
       }
-    } catch (err) { setSyncMsg(`Couldn't reach the sheet (${err.message})`); }
+    } catch (err) { setSyncMsg(`Couldn't reach the sheet (${err.message})`); } finally { clearTimeout(timer); }
   }, []);
 
   useEffect(() => { if (settings.apiUrl) fetchAll(settings); }, [settings.apiUrl]);
@@ -1008,31 +1101,71 @@ export default function WorkoutTracker() {
     return q;
   };
 
-  const postOne = async (item) => {
-    const res = await fetch(settings.apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ key: settings.apiKey, ...item }) });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
+  // Sends everything in one HTTP round trip instead of one request per item —
+  // on a slow/flaky connection this is the difference between a handful of
+  // seconds and a minute-plus, and it means a dropped connection loses at most
+  // one round trip's worth of progress instead of failing partway through a
+  // long sequential chain. A 20s timeout keeps a hung request from leaving the
+  // UI stuck on "Saving…" forever.
+  const postBatch = async (items) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const res = await fetch(settings.apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ key: settings.apiKey, action: "logBatch", items }),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data;
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   // Single entry point for both "save this entry" and "manual refresh": merges any
-  // new items into the queue (replacing same-key items so nothing stacks), pushes
-  // everything pending to the sheet, then re-fetches so every screen reflects it.
+  // new items into the queue (replacing same-key items so nothing stacks — and
+  // persisting to local storage immediately, before any network call), pushes
+  // everything pending to the sheet in one batch, then re-fetches so every
+  // screen reflects it. Reads/writes go through queueRef so two overlapping
+  // calls (e.g. a save plus a manual refresh) can't clobber each other.
   const pushQueue = async (itemsToMerge) => {
     setSyncing(true); setSyncMsg("");
-    const merged = itemsToMerge ? mergeQueue(queue, itemsToMerge) : [...queue];
+    const merged = itemsToMerge ? mergeQueue(queueRef.current, itemsToMerge) : [...queueRef.current];
+    queueRef.current = merged;
     if (itemsToMerge) { setQueue(merged); storeSet("queue", merged); }
+
     if (!settings.apiUrl) {
       setSyncing(false);
       setSyncMsg(itemsToMerge ? "Saved locally — add your Apps Script URL in Settings to sync" : "Set your Apps Script URL and key in Settings first.");
       return { ok: 0, fail: merged.length };
     }
-    let ok = 0; const remaining = [];
-    for (const item of merged) { try { await postOne(item); ok++; } catch { remaining.push(item); } }
-    setQueue(remaining); storeSet("queue", remaining);
-    await fetchAll(settings);
-    setSyncing(false);
-    setSyncMsg(remaining.length > 0 ? `Saved ${ok}, ${remaining.length} pending — will retry` : ok > 0 ? `Saved ${ok} item${ok === 1 ? "" : "s"}` : "Up to date");
-    return { ok, fail: remaining.length };
+    if (merged.length === 0) {
+      await fetchAll(settings);
+      setSyncing(false);
+      setSyncMsg("Up to date");
+      return { ok: 0, fail: 0 };
+    }
+    try {
+      const result = await postBatch(merged);
+      const failedIdx = new Set((result.results || []).filter((r) => !r.success).map((r) => r.index));
+      const remaining = merged.filter((_, idx) => failedIdx.has(idx));
+      const ok = merged.length - remaining.length;
+      queueRef.current = remaining;
+      setQueue(remaining); storeSet("queue", remaining);
+      await fetchAll(settings);
+      setSyncing(false);
+      setSyncMsg(remaining.length > 0 ? `Saved ${ok}, ${remaining.length} pending — will retry` : `Saved ${ok} item${ok === 1 ? "" : "s"}`);
+      return { ok, fail: remaining.length };
+    } catch (err) {
+      // Whole batch failed (offline, timeout, etc.) — everything stays queued,
+      // already safely on disk from the merge above, nothing is lost.
+      setSyncing(false);
+      setSyncMsg(`Couldn't reach the sheet — ${merged.length} pending, will retry`);
+      return { ok: 0, fail: merged.length };
+    }
   };
 
   const now = new Date();
@@ -1090,7 +1223,7 @@ export default function WorkoutTracker() {
         </div>
       ) : (
         <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} pendingCount={queue.length} />
+          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} queue={queue} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} pendingCount={queue.length} />
         </div>
       )}
 
