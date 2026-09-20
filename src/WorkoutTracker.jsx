@@ -879,8 +879,8 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
         const lastStatus = lastSession.length === 0 ? null : lastFilled === 0 ? "None" : lastFilled === lastSession.length ? "Complete" : "Partial";
         const ghostColor = lastStatus ? statusColor(lastStatus) + "55" : "transparent";
         return (
-          <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 22px", overflow: "hidden" }}>
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: ghostColor }} title="Status last time" />
+          <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 22px" }}>
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: ghostColor, borderRadius: "10px 0 0 10px" }} title="Status last time" />
             <div style={{ position: "absolute", left: 5, top: 0, bottom: 0, width: 5, background: stripeColor }} />
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
               <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
