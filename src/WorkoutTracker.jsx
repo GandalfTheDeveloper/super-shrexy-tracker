@@ -175,6 +175,16 @@ async function storeSet(key, value) {
 }
 
 // ---- History-based placeholder logic ----
+function effectiveExerciseLog(exerciseLog, queue) {
+  const pending = (queue || []).filter((i) => i.action === "logExercise").map((i) => i.data);
+  if (!pending.length) return exerciseLog;
+  const key = (r) => `${r.Date}|${r.ExerciseName}|${r.SetNumber}`;
+  const map = new Map();
+  exerciseLog.forEach((r) => map.set(key(r), r));
+  pending.forEach((r) => map.set(key(r), r));
+  return [...map.values()];
+}
+
 function getLastSession(exerciseLog, name, beforeDateStr) {
   const dates = [...new Set(exerciseLog.filter((r) => r.ExerciseName === name && r.Date < beforeDateStr).map((r) => r.Date))].sort();
   if (!dates.length) return [];
@@ -237,16 +247,12 @@ function generateDemoData() {
   return { daily, exercise, run };
 }
 
-function getLastNoteForSameCycleDay(dailyLog, dateStr, anchorDate) {
+function getLastNoteForSameWeekday(dailyLog, dateStr) {
   const d = new Date(dateStr + "T00:00:00");
-  const wk = getWeekNumber(d, anchorDate);
   const dn = dayName(d);
   const candidates = dailyLog
     .filter((r) => r.Date < dateStr && r.Notes)
-    .filter((r) => {
-      const rd = new Date(r.Date + "T00:00:00");
-      return getWeekNumber(rd, anchorDate) === wk && dayName(rd) === dn;
-    })
+    .filter((r) => dayName(new Date(r.Date + "T00:00:00")) === dn)
     .sort((a, b) => b.Date.localeCompare(a.Date));
   return candidates[0]?.Notes || "";
 }
@@ -423,10 +429,10 @@ function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isP
           <X size={18} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
         </div>
 
-        {isPast && (
+        {(
           <div style={{ background: BG, borderRadius: 10, padding: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>What you did</div>
+              <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{isPast ? "What you did" : "Workout"}</div>
               {planType !== "Rest" && <button onClick={() => onEdit(dateStr)} style={{ fontSize: 11, color: ACCENT, background: "none", border: `1px solid ${ACCENT}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 700 }}>Edit</button>}
             </div>
             {dailyEntry ? (
@@ -447,7 +453,7 @@ function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isP
               </>
             ) : planType === "Rest" ? (
               <div style={{ fontSize: 12, color: statusColor("Complete") }}>Rest day — nothing to log.</div>
-            ) : <div style={{ fontSize: 12, color: SUB }}>Nothing logged for this day.</div>}
+            ) : <div style={{ fontSize: 12, color: SUB }}>{isPast ? "Nothing logged for this day." : "Nothing logged yet."}</div>}
           </div>
         )}
 
@@ -732,7 +738,7 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
   );
 }
 
-function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, queue, planOverrides, isEditingHistorical, onDone, onSave, pendingCount }) {
+function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, queue, planOverrides, isEditingHistorical, onDone, onSave, onSwipeSave, pendingCount }) {
   const wk = getWeekNumber(date, anchorDate);
   const dn = dayName(date);
   const dateStr = fmtDate(date);
@@ -740,6 +746,8 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const exercises = useMemo(() => getEffectiveExercises(planOverrides, wk, dn), [wk, dn, planOverrides]);
   const isRunDay = ["Run", "Run+Mobility", "HIIT"].includes(planDay?.Type);
   const existingDaily = dailyLog.find((r) => r.Date === dateStr);
+  const effExerciseLog = useMemo(() => effectiveExerciseLog(exerciseLog, queue), [exerciseLog, queue]);
+  const swipeTouchX = useRef(null);
 
   const [status, setStatus] = useState(existingDaily?.CompletionStatus || "None");
   const [statusManual, setStatusManual] = useState(!!existingDaily?.CompletionStatus);
@@ -796,7 +804,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
     if (!statusManual) setStatus(computeAutoStatus(sets, runData, isRunDay));
   }, [sets, runData, isRunDay, statusManual]);
 
-  const notesPlaceholder = getLastNoteForSameCycleDay(dailyLog, dateStr, anchorDate);
+  const notesPlaceholder = getLastNoteForSameWeekday(dailyLog, dateStr);
 
   const addSetRow = (exName) => setSets((s) => ({ ...s, [exName]: [...(s[exName] || []), { reps: "", weight: "" }] }));
   const updateSetRow = (exName, i, field, val) => setSets((s) => ({ ...s, [exName]: s[exName].map((r, idx) => (idx === i ? { ...r, [field]: val } : r)) }));
@@ -865,41 +873,49 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
         const exStatus = filledReps === 0 ? "None" : filledReps === exRows.length ? "Complete" : "Partial";
         const stripeColor = statusColor(exStatus);
         const type = ex.ExerciseType || "weighted";
+        const lastSession = getLastSession(effExerciseLog, ex.ExerciseName, dateStr);
+        const lastFilled = lastSession.filter((r) => r.Reps).length;
+        const lastStatus = lastSession.length === 0 ? null : lastFilled === 0 ? "None" : lastFilled === lastSession.length ? "Complete" : "Partial";
+        const ghostColor = lastStatus ? statusColor(lastStatus) + "55" : "transparent";
         return (
-          <div key={ex.ExerciseName} style={{ background: CARD, borderRadius: 10, padding: 12, borderLeft: `4px solid ${stripeColor}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
-              <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+          <div key={ex.ExerciseName} style={{ display: "flex", borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ width: 5, flexShrink: 0, background: ghostColor }} title="Status last time" />
+            <div style={{ width: 5, flexShrink: 0, background: stripeColor }} />
+            <div style={{ flex: 1, background: CARD, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
+                <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+              </div>
+              {exRows.map((row, i) => {
+                const ph = rowPlaceholder(effExerciseLog, ex.ExerciseName, dateStr, i);
+                const timerKey = `${ex.ExerciseName}__${i}`;
+                const isTiming = timerRunning[timerKey];
+                return (
+                  <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
+                    {type === "time" ? (
+                      <>
+                        <div style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: isTiming ? ACCENT : INK, fontFamily: "ui-monospace, Menlo, monospace" }}>
+                          {isTiming ? formatSecondsClock(timerElapsed[timerKey]) : row.reps ? formatSecondsClock(row.reps) : ph.reps ? `${formatSecondsClock(ph.reps)} last time` : "0:00"}
+                        </div>
+                        <button onClick={() => toggleTimer(ex.ExerciseName, i)} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: isTiming ? REDC : ACCENT, color: isTiming ? "#fff" : "#06211D", fontWeight: 700, cursor: "pointer" }}>
+                          {isTiming ? "Stop" : "Start"}
+                        </button>
+                      </>
+                    ) : (
+                      <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                    )}
+                    {type === "weighted" && (
+                      <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                    )}
+                    <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
+                  </div>
+                );
+              })}
+              <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
+                <Plus size={14} /> Add set
+              </button>
             </div>
-            {exRows.map((row, i) => {
-              const ph = rowPlaceholder(exerciseLog, ex.ExerciseName, dateStr, i);
-              const timerKey = `${ex.ExerciseName}__${i}`;
-              const isTiming = timerRunning[timerKey];
-              return (
-                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
-                  {type === "time" ? (
-                    <>
-                      <div style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: isTiming ? ACCENT : INK, fontFamily: "ui-monospace, Menlo, monospace" }}>
-                        {isTiming ? formatSecondsClock(timerElapsed[timerKey]) : row.reps ? formatSecondsClock(row.reps) : ph.reps ? `${formatSecondsClock(ph.reps)} last time` : "0:00"}
-                      </div>
-                      <button onClick={() => toggleTimer(ex.ExerciseName, i)} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: isTiming ? REDC : ACCENT, color: isTiming ? "#fff" : "#06211D", fontWeight: 700, cursor: "pointer" }}>
-                        {isTiming ? "Stop" : "Start"}
-                      </button>
-                    </>
-                  ) : (
-                    <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                  )}
-                  {type === "weighted" && (
-                    <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                  )}
-                  <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
-                </div>
-              );
-            })}
-            <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
-              <Plus size={14} /> Add set
-            </button>
           </div>
         );
       })}
@@ -929,6 +945,23 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
       }}>
         {saving ? "Saving…" : pendingCount > 0 ? `Sync now (${pendingCount} pending)` : justSaved ? "Saved ✓" : isEditingHistorical ? "Save & return" : "Save"}
       </button>
+
+      {!isEditingHistorical && (
+        <div
+          onTouchStart={(e) => { swipeTouchX.current = e.touches[0].clientX; }}
+          onTouchEnd={(e) => {
+            if (swipeTouchX.current == null) return;
+            const dx = e.changedTouches[0].clientX - swipeTouchX.current;
+            swipeTouchX.current = null;
+            if (Math.abs(dx) < 50) return;
+            onSwipeSave(buildItems());
+            setDate(addDays(date, dx < 0 ? 1 : -1));
+          }}
+          style={{ padding: 14, borderRadius: 10, border: `1px solid ${ACCENT}`, background: "transparent", color: ACCENT, fontWeight: 700, textAlign: "center", userSelect: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+        >
+          <ChevronLeft size={16} /> Swipe for another day <ChevronRight size={16} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1059,7 +1092,7 @@ export default function WorkoutTracker() {
   const fetchAll = useCallback(async (s) => {
     if (!s.apiUrl || !s.apiKey) return;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
       const res = await fetch(`${s.apiUrl}?key=${encodeURIComponent(s.apiKey)}&action=getAll`, { signal: controller.signal });
       const data = await res.json();
@@ -1112,7 +1145,7 @@ export default function WorkoutTracker() {
   // UI stuck on "Saving…" forever.
   const postBatch = async (items) => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
       const res = await fetch(settings.apiUrl, {
         method: "POST",
@@ -1134,6 +1167,18 @@ export default function WorkoutTracker() {
   // everything pending to the sheet in one batch, then re-fetches so every
   // screen reflects it. Reads/writes go through queueRef so two overlapping
   // calls (e.g. a save plus a manual refresh) can't clobber each other.
+  // Merges items into the queue and persists locally — synchronous from the
+  // caller's point of view (no network wait), used to guarantee nothing is
+  // lost when navigating away (e.g. swiping to another day) before the
+  // person has explicitly hit Save. A background sync is kicked off after,
+  // but navigation never has to wait for it.
+  const saveLocalAndSyncInBackground = (items) => {
+    const merged = mergeQueue(queueRef.current, items);
+    queueRef.current = merged;
+    setQueue(merged); storeSet("queue", merged);
+    pushQueue(null); // fire and forget
+  };
+
   const pushQueue = async (itemsToMerge) => {
     setSyncing(true); setSyncMsg("");
     const merged = itemsToMerge ? mergeQueue(queueRef.current, itemsToMerge) : [...queueRef.current];
@@ -1234,7 +1279,7 @@ export default function WorkoutTracker() {
         </div>
       ) : (
         <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} queue={queue} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} pendingCount={queue.length} />
+          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} queue={queue} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} onSwipeSave={saveLocalAndSyncInBackground} pendingCount={queue.length} />
         </div>
       )}
 
