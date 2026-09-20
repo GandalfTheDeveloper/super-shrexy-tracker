@@ -190,6 +190,22 @@ function effectiveExerciseLog(exerciseLog, queue) {
   return [...map.values()];
 }
 
+// Finds the most recent PAST calendar date this exercise was actually
+// scheduled to happen, per the plan (walks backward day by day). Distinct
+// from getLastSession: this does NOT skip a date just because nothing was
+// logged for it — a skipped session should still count as "last time."
+function getLastScheduledDate(exName, dateStr, anchorDate, planOverrides) {
+  let d = addDays(new Date(dateStr + "T00:00:00"), -1);
+  for (let i = 0; i < 21; i++) {
+    const wk = getWeekNumber(d, anchorDate);
+    const dn = dayName(d);
+    const dayExercises = getEffectiveExercises(planOverrides, wk, dn);
+    if (dayExercises.some((e) => e.ExerciseName === exName)) return fmtDate(d);
+    d = addDays(d, -1);
+  }
+  return null;
+}
+
 function getLastSession(exerciseLog, name, beforeDateStr) {
   const dates = [...new Set(exerciseLog.filter((r) => r.ExerciseName === name && r.Date < beforeDateStr).map((r) => r.Date))].sort();
   if (!dates.length) return [];
@@ -874,9 +890,13 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
         const exStatus = filledReps === 0 ? "None" : filledReps === exRows.length ? "Complete" : "Partial";
         const stripeColor = statusColor(exStatus);
         const type = ex.ExerciseType || "weighted";
-        const lastSession = getLastSession(effExerciseLog, ex.ExerciseName, dateStr);
-        const lastFilled = lastSession.filter((r) => r.Reps).length;
-        const lastStatus = lastSession.length === 0 ? null : lastFilled === 0 ? "None" : lastFilled === lastSession.length ? "Complete" : "Partial";
+        const lastSchedDate = getLastScheduledDate(ex.ExerciseName, dateStr, anchorDate, planOverrides);
+        let lastStatus = null;
+        if (lastSchedDate) {
+          const rowsOnThatDate = effExerciseLog.filter((r) => r.Date === lastSchedDate && r.ExerciseName === ex.ExerciseName);
+          const lastFilled = rowsOnThatDate.filter((r) => r.Reps).length;
+          lastStatus = rowsOnThatDate.length === 0 ? "None" : lastFilled === 0 ? "None" : lastFilled === rowsOnThatDate.length ? "Complete" : "Partial";
+        }
         const ghostColor = lastStatus ? statusColor(lastStatus) + "55" : "transparent";
         return (
           <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 22px" }}>
