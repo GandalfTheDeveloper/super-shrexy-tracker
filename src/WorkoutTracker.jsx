@@ -881,7 +881,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
           <div key={ex.ExerciseName} style={{ display: "flex", borderRadius: 10, overflow: "hidden" }}>
             <div style={{ width: 5, flexShrink: 0, background: ghostColor }} title="Status last time" />
             <div style={{ width: 5, flexShrink: 0, background: stripeColor }} />
-            <div style={{ flex: 1, background: CARD, padding: 12 }}>
+            <div style={{ flex: 1, minWidth: 0, background: CARD, padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                 <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
                 <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
