@@ -142,6 +142,11 @@ function getWeekNumber(date, anchorStr) {
   return mod === 0 ? 1 : 2;
 }
 const parseTargetSets = (ts) => { const n = parseInt(ts, 10); return isNaN(n) ? 1 : n; };
+// Fixed once, on purpose: this used to be a per-device editable setting, which
+// let each device's local storage drift out of sync with the others (one
+// device says Week 1, another says Week 2, for the same calendar day).
+// Sep 21, 2026 is a confirmed Week 1 Monday.
+const CYCLE_ANCHOR = "2026-09-21";
 const effectiveStatus = (planType, entry) => entry?.CompletionStatus || (planType === "Rest" ? "Complete" : "None");
 function getPlanTypeForDate(dateStr, anchorDate) {
   const d = new Date(dateStr + "T00:00:00");
@@ -611,7 +616,6 @@ const SLIDE_DEFS = [{ id: "today", label: "Today" }, { id: "week", label: "Week"
 function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor }) {
   const [url, setUrl] = useState(settings.apiUrl);
   const [key, setKey] = useState(settings.apiKey);
-  const [anchor, setAnchor] = useState(settings.anchorDate);
   const [slides, setSlides] = useState(settings.slides);
   const [seconds, setSeconds] = useState(settings.slideSeconds);
   const [enabled, setEnabled] = useState(settings.slideshowEnabled);
@@ -630,9 +634,6 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
         <input value={url} onChange={(e) => setUrl(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
         <label style={{ fontSize: 12, color: SUB }}>Secret key</label>
         <input value={key} onChange={(e) => setKey(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-        <label style={{ fontSize: 12, color: SUB }}>Cycle anchor date (a Monday that begins Week 1)</label>
-        <input type="date" value={anchor} onChange={(e) => setAnchor(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 6, paddingTop: 12 }}>
           <label style={{ fontSize: 12, color: SUB, display: "block", marginBottom: 8 }}>Slides to display</label>
           {SLIDE_DEFS.map((s) => (
@@ -657,7 +658,7 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
             style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, marginTop: 4 }} />
         </div>
 
-        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: anchor, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled, refreshMinutes: refreshMin || 3 })}
+        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: CYCLE_ANCHOR, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled, refreshMinutes: refreshMin || 3 })}
           style={{ padding: 12, borderRadius: 10, border: "none", background: ACCENT, color: "#06211D", fontWeight: 700, marginTop: 8 }}>Save</button>
 
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 4, paddingTop: 12 }}>
@@ -878,44 +879,42 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
         const lastStatus = lastSession.length === 0 ? null : lastFilled === 0 ? "None" : lastFilled === lastSession.length ? "Complete" : "Partial";
         const ghostColor = lastStatus ? statusColor(lastStatus) + "55" : "transparent";
         return (
-          <div key={ex.ExerciseName} style={{ display: "flex", borderRadius: 10, overflow: "hidden" }}>
-            <div style={{ width: 5, flexShrink: 0, background: ghostColor }} title="Status last time" />
-            <div style={{ width: 5, flexShrink: 0, background: stripeColor }} />
-            <div style={{ flex: 1, minWidth: 0, background: CARD, padding: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
-                <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
-              </div>
-              {exRows.map((row, i) => {
-                const ph = rowPlaceholder(effExerciseLog, ex.ExerciseName, dateStr, i);
-                const timerKey = `${ex.ExerciseName}__${i}`;
-                const isTiming = timerRunning[timerKey];
-                return (
-                  <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                    <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
-                    {type === "time" ? (
-                      <>
-                        <div style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: isTiming ? ACCENT : INK, fontFamily: "ui-monospace, Menlo, monospace" }}>
-                          {isTiming ? formatSecondsClock(timerElapsed[timerKey]) : row.reps ? formatSecondsClock(row.reps) : ph.reps ? `${formatSecondsClock(ph.reps)} last time` : "0:00"}
-                        </div>
-                        <button onClick={() => toggleTimer(ex.ExerciseName, i)} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: isTiming ? REDC : ACCENT, color: isTiming ? "#fff" : "#06211D", fontWeight: 700, cursor: "pointer" }}>
-                          {isTiming ? "Stop" : "Start"}
-                        </button>
-                      </>
-                    ) : (
-                      <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                    )}
-                    {type === "weighted" && (
-                      <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                    )}
-                    <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
-                  </div>
-                );
-              })}
-              <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
-                <Plus size={14} /> Add set
-              </button>
+          <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 22px", overflow: "hidden" }}>
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: ghostColor }} title="Status last time" />
+            <div style={{ position: "absolute", left: 5, top: 0, bottom: 0, width: 5, background: stripeColor }} />
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
+              <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
             </div>
+            {exRows.map((row, i) => {
+              const ph = rowPlaceholder(effExerciseLog, ex.ExerciseName, dateStr, i);
+              const timerKey = `${ex.ExerciseName}__${i}`;
+              const isTiming = timerRunning[timerKey];
+              return (
+                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
+                  {type === "time" ? (
+                    <>
+                      <div style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: isTiming ? ACCENT : INK, fontFamily: "ui-monospace, Menlo, monospace" }}>
+                        {isTiming ? formatSecondsClock(timerElapsed[timerKey]) : row.reps ? formatSecondsClock(row.reps) : ph.reps ? `${formatSecondsClock(ph.reps)} last time` : "0:00"}
+                      </div>
+                      <button onClick={() => toggleTimer(ex.ExerciseName, i)} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: isTiming ? REDC : ACCENT, color: isTiming ? "#fff" : "#06211D", fontWeight: 700, cursor: "pointer" }}>
+                        {isTiming ? "Stop" : "Start"}
+                      </button>
+                    </>
+                  ) : (
+                    <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  )}
+                  {type === "weighted" && (
+                    <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  )}
+                  <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
+                </div>
+              );
+            })}
+            <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
+              <Plus size={14} /> Add set
+            </button>
           </div>
         );
       })}
@@ -967,7 +966,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
 }
 
 export default function WorkoutTracker() {
-  const [settings, setSettings] = useState({ apiUrl: "", apiKey: "", anchorDate: fmtDate(startOfWeek(new Date())), slides: ["today", "week", "month", "progress"], slideSeconds: 150, slideshowEnabled: true });
+  const [settings, setSettings] = useState({ apiUrl: "", apiKey: "", anchorDate: CYCLE_ANCHOR, slides: ["today", "week", "month", "progress"], slideSeconds: 150, slideshowEnabled: true });
   const [showSettings, setShowSettings] = useState(false);
   const [mode, setMode] = useState(typeof window !== "undefined" && window.innerWidth < 700 ? "entry" : "display");
   const [slide, setSlide] = useState(0);
@@ -1038,7 +1037,7 @@ export default function WorkoutTracker() {
   useEffect(() => {
     (async () => {
       const s = await storeGet("settings", null);
-      if (s) setSettings((prev) => ({ ...prev, ...s }));
+      if (s) setSettings((prev) => ({ ...prev, ...s, anchorDate: CYCLE_ANCHOR }));
       setDailyLog(await storeGet("dailyLog", []));
       setExerciseLog(await storeGet("exerciseLog", []));
       setRunLog(await storeGet("runLog", []));
