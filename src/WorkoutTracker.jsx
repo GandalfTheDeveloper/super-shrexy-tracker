@@ -607,7 +607,11 @@ function windowFit(pts, d, base = 7, maxSpan = 30, minPts = 3) {
   const win = cand.filter((p) => p.t > d - span);
   if (win.length < 2) return null;
   const f = linFit(win.map((p) => ({ x: p.t - d, y: p.v })));
-  return { value: f.a, slope: f.b };
+  // The fitted level is clamped to what was actually weighed in this window:
+  // a straight line through a descent-then-plateau undershoots the kink, and
+  // the trend must never claim a weight lower/higher than any real weigh-in.
+  const vals = win.map((p) => p.v);
+  return { value: Math.min(Math.max(f.a, Math.min(...vals)), Math.max(...vals)), slope: f.b };
 }
 
 // Deterministic "random" color runs so the rainbow is stable across reloads.
@@ -638,6 +642,9 @@ function weightColor(v, slopeWk, maintenance, t, rainbowMap) {
   return { color: REDC, label: "Stalled or gaining" };
 }
 
+// The LINE only ever connects real weigh-ins (plus one dashed segment from the
+// last weigh-in to today). The regression is used for COLOR only, evaluated
+// at real weigh-in dates — it never draws values where no data exists.
 function computeWeightAnalysis(dailyLog, todayIdx, windowDays = 10) {
   const byDay = new Map();
   dailyLog.forEach((r) => {
@@ -645,28 +652,50 @@ function computeWeightAnalysis(dailyLog, todayIdx, windowDays = 10) {
     if (DATE_RE.test(String(r.Date)) && !isNaN(w) && w > 50 && w < 700) byDay.set(dayIndex(r.Date), w);
   });
   const raw = [...byDay.entries()].map(([t, v]) => ({ t, v })).sort((a, b) => a.t - b.t);
-  if (raw.length < 2) return { raw, trend: [], latest: null, maintenance: false, lastT: raw.length ? raw[0].t : null };
+  if (!raw.length) return { raw, line: [], latest: null, lastReal: null, maintenance: false, rainbowMap: new Map() };
   const lastT = raw[raw.length - 1].t;
-  const fits = [];
-  for (let d = raw[0].t; d <= lastT; d++) {
-    const f = windowFit(raw, d, windowDays, Math.max(30, windowDays * 2));
-    if (f) fits.push({ t: d, v: f.value, slopeWk: f.slope * 7, dashed: false });
-  }
-  if (!fits.length) return { raw, trend: [], latest: null, maintenance: false, lastT };
-  // Projection: extend the last real trend at its current slope up to today.
-  const lastFit = fits[fits.length - 1];
-  for (let d = lastT + 1; d <= todayIdx; d++) fits.push({ t: d, v: lastFit.v + (lastFit.slopeWk / 7) * (d - lastFit.t), slopeWk: lastFit.slopeWk, dashed: true });
-  const rainbowMap = buildRainbowMap(fits[0].t, fits[fits.length - 1].t);
-  let maintenance = false, streak = 0, maintStart = null;
-  const trend = fits.map((p) => {
-    if (!maintenance && !p.dashed) {
-      streak = p.v >= GOAL_LOW && p.v <= GOAL_HIGH ? streak + 1 : 0;
-      if (streak >= MAINT_STREAK_DAYS) { maintenance = true; maintStart = p.t; }
+  const rainbowMap = buildRainbowMap(raw[0].t, Math.max(todayIdx, lastT) + 1);
+  // Widen the window over sparse stretches, but never reach back more than ~6
+  // weeks — past that there's no recent trend to measure.
+  const maxSpan = Math.max(42, windowDays * 2);
+
+  let maintenance = false, maintStart = null, runStart = null, prevT = null;
+  const line = raw.map((p) => {
+    const f = windowFit(raw, p.t, windowDays, maxSpan);
+    const trendV = f ? f.value : p.v;
+    const slopeWk = f ? f.slope * 7 : null;
+    // Maintenance: trend held inside the goal range for 14+ days, with no
+    // gap longer than a week between weigh-ins (a gap breaks "consistently").
+    if (!maintenance) {
+      const inRange = f !== null && trendV >= GOAL_LOW && trendV <= GOAL_HIGH;
+      if (!inRange) runStart = null;
+      else if (runStart === null || (prevT !== null && p.t - prevT > 7)) runStart = p.t;
+      if (runStart !== null && p.t - runStart >= MAINT_STREAK_DAYS) { maintenance = true; maintStart = p.t; }
     }
+    prevT = p.t;
     const inMaint = maintenance && p.t > maintStart;
-    return { ...p, inMaint, ...weightColor(p.v, p.slopeWk, inMaint, p.t, rainbowMap) };
+    let c;
+    if (f) c = weightColor(trendV, slopeWk, inMaint, p.t, rainbowMap);
+    else if (inMaint || trendV < GOAL_LOW || trendV <= GOAL_HIGH) c = weightColor(trendV, 0, inMaint, p.t, rainbowMap);
+    else c = { color: SUB, label: "Not enough recent weigh-ins for a trend" };
+    const rainbow = inMaint && trendV >= GOAL_LOW && trendV <= GOAL_HIGH;
+    return { t: p.t, v: p.v, trendV, slopeWk, inMaint, rainbow, dashed: false, ...c };
   });
-  return { raw, trend, latest: trend[trend.length - 1], maintenance, lastT };
+
+  const lastReal = line[line.length - 1];
+  let latest = lastReal;
+  if (todayIdx > lastT) {
+    // Best guess for today only: continue from the last real weigh-in at the
+    // current trend rate. Replaced by a real point as soon as today is logged.
+    const slope = lastReal.slopeWk !== null ? lastReal.slopeWk : 0;
+    const gap = todayIdx - lastT;
+    const projTrend = lastReal.trendV + (slope / 7) * gap;
+    const inMaint = maintenance;
+    const c = lastReal.slopeWk !== null || inMaint ? weightColor(projTrend, slope, inMaint, todayIdx, rainbowMap) : { color: lastReal.color, label: lastReal.label };
+    latest = { t: todayIdx, v: lastReal.v + (slope / 7) * gap, trendV: projTrend, slopeWk: lastReal.slopeWk, inMaint, rainbow: inMaint && projTrend >= GOAL_LOW && projTrend <= GOAL_HIGH, dashed: true, ...c };
+    line.push(latest);
+  }
+  return { raw, line, latest, lastReal, maintenance, rainbowMap };
 }
 
 function computeConsistency(dailyLog, exerciseLog, anchorDate, todayIdx) {
@@ -844,6 +873,27 @@ function niceTicks(min, max, count = 5) {
   return { min: lo, max: hi, ticks };
 }
 
+// Monotone cubic tangents (same method as d3.curveMonotoneX). The curve
+// passes through every real point and never overshoots above/below the two
+// points a segment connects — so the curve can't invent highs or lows.
+function monotoneTangents(p) {
+  const n = p.length, m = new Array(n).fill(0);
+  if (n < 2) return m;
+  const slope = (a, b) => (b.x - a.x ? (b.y - a.y) / (b.x - a.x) : 0);
+  if (n === 2) { m[0] = m[1] = slope(p[0], p[1]); return m; }
+  const sgn = (v) => (v < 0 ? -1 : 1);
+  for (let i = 1; i < n - 1; i++) {
+    const h0 = p[i].x - p[i - 1].x, h1 = p[i + 1].x - p[i].x;
+    const s0 = slope(p[i - 1], p[i]), s1 = slope(p[i], p[i + 1]);
+    const q = (s0 * h1 + s1 * h0) / (h0 + h1 || 1);
+    m[i] = (sgn(s0) + sgn(s1)) * Math.min(Math.abs(s0), Math.abs(s1), 0.5 * Math.abs(q)) || 0;
+  }
+  const end = (a, b, t) => { const h = b.x - a.x; return h ? (3 * (b.y - a.y) / h - t) / 2 : t; };
+  m[0] = end(p[0], p[1], m[1]);
+  m[n - 1] = end(p[n - 2], p[n - 1], m[n - 2]);
+  return m;
+}
+
 function SvgChart({ series, left, right, xLabel, bands = [], refLines = [] }) {
   const wrapRef = useRef(null);
   const [size, setSize] = useState({ w: 640, h: 300 });
@@ -905,17 +955,34 @@ function SvgChart({ series, left, right, xLabel, bands = [], refLines = [] }) {
       const pts = s.points;
       const op = s.opacity !== undefined ? s.opacity : 1;
       if (!s.noLine) {
+        const px = pts.map((p) => ({ x: xs(p.t), y: ax.ys(p.v) }));
+        // Tangents come from the solid (real) points only, so a projected
+        // point can never bend the shape of the real line.
+        const firstDashed = pts.findIndex((p) => p.dashed);
+        const solidN = firstDashed === -1 ? pts.length : firstDashed;
+        const tan = s.curve !== false ? monotoneTangents(px.slice(0, solidN)) : null;
         for (let i = 0; i < pts.length - 1; i++) {
           const p1 = pts[i], p2 = pts[i + 1];
-          const x1 = xs(p1.t), y1 = ax.ys(p1.v), x2 = xs(p2.t), y2 = ax.ys(p2.v);
+          const { x: x1, y: y1 } = px[i], { x: x2, y: y2 } = px[i + 1];
           const c1 = p1.color || s.color, c2 = p2.color || s.color;
+          // Extra color stops inside a segment (e.g. the rainbow flowing
+          // across a multi-day gap between weigh-ins).
+          const mids = [];
+          if (s.colorAt && x2 - x1 > 0.5) for (let t = Math.floor(p1.t) + 1; t < p2.t; t++) { const c = s.colorAt(t, p1, p2); if (c) mids.push({ o: (xs(t) - x1) / (x2 - x1), c }); }
           let stroke = c1;
-          if (c1 !== c2 && (Math.abs(x2 - x1) > 0.01 || Math.abs(y2 - y1) > 0.01)) {
+          if ((c1 !== c2 || mids.length) && x2 - x1 > 0.01) {
             const id = `${uid}g${si}x${i}`;
-            defs.push(<linearGradient key={id} id={id} gradientUnits="userSpaceOnUse" x1={x1} y1={y1} x2={x2} y2={y2}><stop offset="0" stopColor={c1} /><stop offset="1" stopColor={c2} /></linearGradient>);
+            defs.push(<linearGradient key={id} id={id} gradientUnits="userSpaceOnUse" x1={x1} y1={0} x2={x2} y2={0}><stop offset="0" stopColor={c1} />{mids.map((m, k) => <stop key={k} offset={m.o} stopColor={m.c} />)}<stop offset="1" stopColor={c2} /></linearGradient>);
             stroke = `url(#${id})`;
           }
-          segs.push(<line key={`${si}l${i}`} x1={x1} y1={y1} x2={x2} y2={y2} stroke={stroke} strokeWidth={s.width || 3} strokeLinecap="round" strokeDasharray={p2.dashed ? "7 7" : undefined} opacity={op} />);
+          const dashed = p2.dashed;
+          const common = { stroke, strokeWidth: s.width || 3, strokeLinecap: "round", fill: "none", opacity: op, strokeDasharray: dashed ? "7 7" : undefined };
+          if (tan && !dashed && i + 1 < solidN) {
+            const dx = (x2 - x1) / 3;
+            segs.push(<path key={`${si}l${i}`} d={`M${x1},${y1}C${x1 + dx},${y1 + tan[i] * dx},${x2 - dx},${y2 - tan[i + 1] * dx},${x2},${y2}`} {...common} />);
+          } else {
+            segs.push(<line key={`${si}l${i}`} x1={x1} y1={y1} x2={x2} y2={y2} {...common} />);
+          }
         }
       }
       if (s.dots) pts.forEach((p, i) => segs.push(<circle key={`${si}d${i}`} cx={xs(p.t)} cy={ax.ys(p.v)} r={s.dotR || 4} fill={s.dotColor || p.color || s.color} opacity={op} />));
@@ -986,16 +1053,22 @@ function ProgressSlide({ dailyLog, exerciseLog, runLog, anchorDate, planOverride
 
   if (tab === "weight" && weight) {
     title = `Body weight · ${weightWindow}-day trend · ${weight.maintenance ? "Maintenance" : "Cutting"}`;
-    if (weight.latest) {
-      const l = weight.latest;
-      statusColor = l.inMaint && l.v >= GOAL_LOW && l.v <= GOAL_HIGH ? ACCENT : l.color;
-      status = `${l.v.toFixed(1)} lb trend · ${signed(l.slopeWk)} lb/wk · ${l.label}${l.dashed ? ` · projected (last weigh-in ${todayIdx - weight.lastT}d ago)` : ""}`;
-    } else status = "Log a few weigh-ins to build the trend line.";
+    if (weight.lastReal) {
+      const l = weight.latest, r = weight.lastReal;
+      statusColor = l.rainbow ? ACCENT : l.color;
+      const rate = l.slopeWk !== null ? `trend ${signed(l.slopeWk)} lb/wk` : "trend —";
+      status = `Last weigh-in ${r.v.toFixed(1)} lb (${idxLabel(r.t)}) · ${rate} · ${l.label}${l.dashed ? ` · dashed = projection to today` : ""}`;
+    } else status = "Log a few weigh-ins to build the trend.";
     legend = weight.maintenance
       ? [<LegendChip key="r" rainbow label="In range" />, <LegendChip key="g" color={GOLD} label="1–2 lb over" />, <LegendChip key="rd" color={REDC} label="Under 175 / 2+ lb over" />]
       : [<LegendChip key="b" color={ACCENT} label="1–2 lb/wk" />, <LegendChip key="g" color={GOLD} label="Under 1 lb/wk" />, <LegendChip key="rd" color={REDC} label="Stalled / gaining" />, <LegendChip key="w" color={WHITE_C} label="Over 2 lb/wk" />];
-    legend.push(<LegendChip key="p" dashed label="Projected" />, <LegendChip key="d" dot color={SUB} label="Weigh-ins" />);
-    chart = <SvgChart series={[{ points: weight.raw, noLine: true, dots: true, dotColor: SUB, dotR: 3, opacity: 0.6 }, { points: weight.trend, width: 4 }]} left={{ label: "Weight (lb)", format: (v) => Math.round(v) }} xLabel="Date" bands={[{ from: GOAL_LOW, to: GOAL_HIGH, color: ACCENT }]} />;
+    if (weight.line.some((p) => p.color === SUB)) legend.push(<LegendChip key="n" color={SUB} label="Not enough data for a trend" />);
+    legend.push(<LegendChip key="p" dashed label="Projected (today only)" />, <LegendChip key="d" dot color={INK} label="Weigh-ins" />);
+    const rb = weight.rainbowMap;
+    chart = <SvgChart series={[
+      { points: weight.line, width: 4, curve: true, colorAt: (t, p1, p2) => (p1.rainbow && p2.rainbow ? rb.get(t) : null) },
+      { points: weight.raw, noLine: true, dots: true, dotColor: INK, dotR: 3, opacity: 0.85 },
+    ]} left={{ label: "Weight (lb)", format: (v) => Math.round(v) }} xLabel="Date" bands={[{ from: GOAL_LOW, to: GOAL_HIGH, color: ACCENT }]} />;
   } else if (tab === "completion" && cons) {
     if (ver === "A") {
       title = "Consistency · A · 7-day completion rate (scheduled days)";
