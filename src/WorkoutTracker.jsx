@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Settings, ChevronLeft, ChevronRight, Smartphone, Monitor, RefreshCw, Plus, Trash2, X } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
+import React, { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
+import { Settings, ChevronLeft, ChevronRight, Smartphone, Monitor, RefreshCw, Plus, Trash2, X, Maximize2, Minimize2 } from "lucide-react";
 
 const PLAN_DAYS = [
   { Week: 1, DayOfWeek: "Monday", Type: "Lift", MuscleGroups: "Back, Biceps, Core", Notes: "" },
@@ -100,9 +99,17 @@ const RAW_EX = `1,Monday,1,Back,Cable Rows,3,12
 2,Sunday,14,Triceps,Overhead Tricep Extension,3,12
 2,Sunday,15,Triceps,Face Pulls,2,12`;
 
+// "weighted" (reps + weight), "reps" (bodyweight, reps only), "time" (timer, seconds only)
+const REPS_ONLY_NAMES = new Set(["Hanging Leg Raises", "Ab Roller", "Slow Pushups"]);
+function classifyExerciseType(name, targetReps) {
+  if (/s$/i.test(String(targetReps || "").trim())) return "time";
+  if (REPS_ONLY_NAMES.has(name)) return "reps";
+  return "weighted";
+}
+
 const PLAN_EXERCISES = RAW_EX.split("\n").map((line) => {
   const [Week, DayOfWeek, Order, MuscleGroup, ExerciseName, TargetSets, TargetReps] = line.split(",");
-  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps };
+  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps, ExerciseType: classifyExerciseType(ExerciseName, TargetReps) };
 });
 
 // ---- Palette: dark teal base, turquoise / mustard gold / red accents ----
@@ -134,10 +141,28 @@ function getWeekNumber(date, anchorStr) {
   return mod === 0 ? 1 : 2;
 }
 const parseTargetSets = (ts) => { const n = parseInt(ts, 10); return isNaN(n) ? 1 : n; };
+// Fixed once, on purpose: this used to be a per-device editable setting, which
+// let each device's local storage drift out of sync with the others (one
+// device says Week 1, another says Week 2, for the same calendar day).
+// Sep 21, 2026 is a confirmed Week 1 Monday.
+const CYCLE_ANCHOR = "2026-09-21";
+const isManualFlag = (v) => String(v).toUpperCase() === "TRUE";
+// Rest days count as Complete unless a status was deliberately set by hand —
+// otherwise logging a weigh-in on a rest day (which saves status "None")
+// would paint that rest day red.
+const effectiveStatus = (planType, entry) => {
+  if (planType === "Rest") return entry?.CompletionStatus && isManualFlag(entry.StatusManual) ? entry.CompletionStatus : "Complete";
+  return entry?.CompletionStatus || "None";
+};
+function getPlanTypeForDate(dateStr, anchorDate) {
+  const d = new Date(dateStr + "T00:00:00");
+  const wk = getWeekNumber(d, anchorDate);
+  return PLAN_DAYS.find((p) => p.Week === wk && p.DayOfWeek === dayName(d))?.Type;
+}
 const planKey = (wk, dn) => `${wk}-${dn}`;
 function getEffectiveExercises(overrides, wk, dn) {
   const key = planKey(wk, dn);
-  if (overrides && overrides[key]) return overrides[key].map((e, i) => ({ ...e, Week: wk, DayOfWeek: dn, Order: i + 1 }));
+  if (overrides && overrides[key]) return overrides[key].map((e, i) => ({ ...e, Week: wk, DayOfWeek: dn, Order: i + 1, ExerciseType: e.ExerciseType || "weighted" }));
   return PLAN_EXERCISES.filter((e) => e.Week === wk && e.DayOfWeek === dn).sort((a, b) => a.Order - b.Order);
 }
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
@@ -161,6 +186,41 @@ async function storeSet(key, value) {
 }
 
 // ---- History-based placeholder logic ----
+function overlayPending(log, queue, action) {
+  const pending = (queue || []).filter((i) => i.action === action).map((i) => i.data);
+  if (!pending.length) return log;
+  const map = new Map();
+  log.forEach((r) => map.set(r.Date, r));
+  pending.forEach((r) => map.set(r.Date, { ...(map.get(r.Date) || {}), ...r }));
+  return [...map.values()];
+}
+
+function effectiveExerciseLog(exerciseLog, queue) {
+  const pending = (queue || []).filter((i) => i.action === "logExercise").map((i) => i.data);
+  if (!pending.length) return exerciseLog;
+  const key = (r) => `${r.Date}|${r.ExerciseName}|${r.SetNumber}`;
+  const map = new Map();
+  exerciseLog.forEach((r) => map.set(key(r), r));
+  pending.forEach((r) => map.set(key(r), r));
+  return [...map.values()];
+}
+
+// Finds the most recent PAST calendar date this exercise was actually
+// scheduled to happen, per the plan (walks backward day by day). Distinct
+// from getLastSession: this does NOT skip a date just because nothing was
+// logged for it — a skipped session should still count as "last time."
+function getLastScheduledDate(exName, dateStr, anchorDate, planOverrides) {
+  let d = addDays(new Date(dateStr + "T00:00:00"), -1);
+  for (let i = 0; i < 21; i++) {
+    const wk = getWeekNumber(d, anchorDate);
+    const dn = dayName(d);
+    const dayExercises = getEffectiveExercises(planOverrides, wk, dn);
+    if (dayExercises.some((e) => e.ExerciseName === exName)) return fmtDate(d);
+    d = addDays(d, -1);
+  }
+  return null;
+}
+
 function getLastSession(exerciseLog, name, beforeDateStr) {
   const dates = [...new Set(exerciseLog.filter((r) => r.ExerciseName === name && r.Date < beforeDateStr).map((r) => r.Date))].sort();
   if (!dates.length) return [];
@@ -223,6 +283,49 @@ function generateDemoData() {
   return { daily, exercise, run };
 }
 
+function getLastNoteForSameWeekday(dailyLog, dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  const dn = dayName(d);
+  const candidates = dailyLog
+    .filter((r) => r.Date < dateStr && r.Notes)
+    .filter((r) => dayName(new Date(r.Date + "T00:00:00")) === dn)
+    .sort((a, b) => b.Date.localeCompare(a.Date));
+  return candidates[0]?.Notes || "";
+}
+
+function computePace(distance, time) {
+  const dist = parseFloat(distance);
+  if (!dist || dist <= 0 || !time) return "";
+  const minutes = parseClock(time);
+  if (!(minutes > 0)) return "";
+  return formatPace(minutes / dist);
+}
+
+function formatSecondsClock(totalSeconds) {
+  const n = Number(totalSeconds);
+  if (!n || n < 0) return "0:00";
+  const m = Math.floor(n / 60);
+  const s = Math.floor(n % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function computeAutoStatus(setsObj, runD, isRunDay, isRestDay) {
+  if (isRestDay) return "Complete";
+  const allRows = Object.values(setsObj).flat();
+  if (allRows.length > 0) {
+    const filled = allRows.filter((r) => String(r.reps).trim() !== "");
+    if (filled.length === 0) return isRunDay && (runD.Distance || runD.Time) ? "Partial" : "None";
+    if (filled.length === allRows.length) return "Complete";
+    return "Partial";
+  }
+  if (isRunDay) {
+    if (runD.Distance && runD.Time) return "Complete";
+    if (runD.Distance || runD.Time) return "Partial";
+    return "None";
+  }
+  return "None";
+}
+
 function rowPlaceholder(exerciseLog, exName, dateStr, rowIndex) {
   const session = getLastSession(exerciseLog, exName, dateStr);
   if (rowIndex === 0) return modeOrAverage(session);
@@ -248,6 +351,7 @@ const STATUS_OPTS = [{ value: "None", label: "None", color: REDC }, { value: "Pa
 
 function TodaySlide({ date, weekNum, planDay, exercises, dailyLog }) {
   const existing = dailyLog.find((r) => r.Date === fmtDate(date));
+  const eff = effectiveStatus(planDay?.Type, existing);
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 20, overflowY: "auto" }}>
       <div>
@@ -274,7 +378,7 @@ function TodaySlide({ date, weekNum, planDay, exercises, dailyLog }) {
         </div>
         <div>
           <div style={{ fontSize: 12, color: SUB, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Status</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: statusColor(existing?.CompletionStatus) }}>{existing?.CompletionStatus || "Not logged"}</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: statusColor(eff) }}>{eff === "None" ? "Not logged" : eff}</div>
         </div>
       </div>
       <div style={{ fontSize: 12, color: SUB, fontStyle: "italic" }}>Read-only display &middot; log sets, weight and notes from phone mode.</div>
@@ -293,11 +397,11 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 16, overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{label}</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>{label}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 15, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
@@ -310,19 +414,19 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
           const log = dailyLog.find((r) => r.Date === ds);
           const note = calendarNotes?.[ds];
           const isPast = ds < today, isToday = ds === today;
-          const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
+          const color = isPast || isToday ? statusColor(effectiveStatus(plan?.Type, log)) : LINE;
           return (
             <div key={ds} onClick={() => setEditingDate(ds)} style={{ cursor: "pointer", display: "flex", flexDirection: "column", background: CARD, borderRadius: 10, padding: 12, border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}` }}>
-              <div style={{ fontSize: 13, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
+              <div style={{ fontSize: 15, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
                 {exList.length > 0 ? exList.map((e, i) => (
-                  <div key={i} style={{ fontSize: 12.5, color: SUB, lineHeight: 1.5, display: "flex", gap: 4 }}>
+                  <div key={i} style={{ fontSize: 14.5, color: SUB, lineHeight: 1.5, display: "flex", gap: 4 }}>
                     <span style={{ color: GOLD, flexShrink: 0 }}>&#9656;</span>{e.ExerciseName}
                   </div>
-                )) : <div style={{ fontSize: 13, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
+                )) : <div style={{ fontSize: 15, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
               </div>
-              {note && <div style={{ fontSize: 12.5, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
+              {note && <div style={{ fontSize: 14.5, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 5, borderRadius: 3, background: (isPast || isToday) ? color : "transparent", marginTop: 8 }} />
             </div>
           );
@@ -331,6 +435,7 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
       {editingDate && (
         <DayDetailModal dateStr={editingDate} initialNote={calendarNotes?.[editingDate]}
           isPast={editingDate < today}
+          planType={getPlanTypeForDate(editingDate, anchorDate)}
           dailyEntry={dailyLog.find((r) => r.Date === editingDate)}
           exerciseEntries={exerciseLog.filter((r) => r.Date === editingDate)}
           onClose={() => setEditingDate(null)}
@@ -342,28 +447,29 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
   );
 }
 
-function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isPast, onSave, onClear, onClose, onEdit }) {
+function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isPast, planType, onSave, onClear, onClose, onEdit }) {
   const [text, setText] = useState(initialNote || "");
   const grouped = exerciseEntries.reduce((acc, r) => { (acc[r.ExerciseName] = acc[r.ExerciseName] || []).push(r); return acc; }, {});
+  const eff = effectiveStatus(planType, dailyEntry);
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 25 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: 22, width: 340, maxHeight: "85%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: "22px 22px 40px 22px", width: 340, maxHeight: "85%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 15 }}>{new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</div>
           <X size={18} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
         </div>
 
-        {isPast && (
+        {(
           <div style={{ background: BG, borderRadius: 10, padding: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>What you did</div>
-              <button onClick={() => onEdit(dateStr)} style={{ fontSize: 11, color: ACCENT, background: "none", border: `1px solid ${ACCENT}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 700 }}>Edit</button>
+              <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{isPast ? "What you did" : "Workout"}</div>
+              {planType !== "Rest" && <button onClick={() => onEdit(dateStr)} style={{ fontSize: 11, color: ACCENT, background: "none", border: `1px solid ${ACCENT}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 700 }}>Edit</button>}
             </div>
             {dailyEntry ? (
               <>
                 <div style={{ display: "flex", gap: 16, marginBottom: Object.keys(grouped).length ? 10 : 0, fontSize: 13 }}>
                   <span>Weight: <b>{dailyEntry.Weight || "—"}</b></span>
-                  <span style={{ color: statusColor(dailyEntry.CompletionStatus) }}>{dailyEntry.CompletionStatus || "Not logged"}</span>
+                  <span style={{ color: statusColor(eff) }}>{eff}</span>
                 </div>
                 {dailyEntry.Notes && <div style={{ fontSize: 12, color: SUB, marginBottom: 10, fontStyle: "italic" }}>&ldquo;{dailyEntry.Notes}&rdquo;</div>}
                 {Object.entries(grouped).map(([name, rows]) => (
@@ -375,7 +481,9 @@ function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isP
                   </div>
                 ))}
               </>
-            ) : <div style={{ fontSize: 12, color: SUB }}>Nothing logged for this day.</div>}
+            ) : planType === "Rest" ? (
+              <div style={{ fontSize: 12, color: statusColor("Complete") }}>Rest day — nothing to log.</div>
+            ) : <div style={{ fontSize: 12, color: SUB }}>{isPast ? "Nothing logged for this day." : "Nothing logged yet."}</div>}
           </div>
         )}
 
@@ -403,19 +511,19 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
   const today = fmtDate(new Date());
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 14, position: "relative" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "16px 20px", gap: 10, position: "relative", boxSizing: "border-box" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 15, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 13, color: SUB, textTransform: "uppercase" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 15, color: SUB, textTransform: "uppercase" }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "1fr", gap: 6, flex: 1 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "minmax(0, 1fr)", gap: 6, flex: "1 1 0", minHeight: 0 }}>
         {cells.map((d, i) => {
           if (!d) return <div key={i} />;
           const wk = getWeekNumber(d, anchorDate);
@@ -425,12 +533,12 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
           const log = dailyLog.find((r) => r.Date === ds);
           const note = calendarNotes?.[ds];
           const isPast = ds < today, isToday = ds === today;
-          const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
+          const color = isPast || isToday ? statusColor(effectiveStatus(plan?.Type, log)) : LINE;
           return (
-            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 12 }}>
-              <div style={{ fontSize: 15, fontWeight: 700 }}>{d.getDate()}</div>
-              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 12 }}>{label}</div>
-              {note && <div style={{ color: GOLD, fontSize: 11, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
+            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 14, overflow: "hidden", minHeight: 0, minWidth: 0 }}>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{d.getDate()}</div>
+              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 14 }}>{label}</div>
+              {note && <div style={{ color: GOLD, fontSize: 13, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 4, borderRadius: 2, background: (isPast || isToday) ? color : "transparent" }} />
             </div>
           );
@@ -439,6 +547,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
       {editingDate && (
         <DayDetailModal dateStr={editingDate} initialNote={calendarNotes?.[editingDate]}
           isPast={editingDate < today}
+          planType={getPlanTypeForDate(editingDate, anchorDate)}
           dailyEntry={dailyLog.find((r) => r.Date === editingDate)}
           exerciseEntries={exerciseLog.filter((r) => r.Date === editingDate)}
           onClose={() => setEditingDate(null)}
@@ -450,76 +559,525 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
   );
 }
 
-function ProgressSlide({ dailyLog, exerciseLog, runLog }) {
-  const [tab, setTab] = useState("weight");
-  const exerciseNames = useMemo(() => [...new Set(exerciseLog.map((r) => r.ExerciseName))], [exerciseLog]);
-  const [exSel, setExSel] = useState("");
-  useEffect(() => { if (!exSel && exerciseNames.length) setExSel(exerciseNames[0]); }, [exerciseNames]);
+// ===================== Progress analytics =====================
+const WHITE_C = "#F4F7F6";
+const RAINBOW = [ACCENT, GOLD, REDC, WHITE_C];
+const GOAL_LOW = 175; // goal range is 175-179 inclusive (trend values are continuous)
+const GOAL_HIGH = 179;
+const GOLD_CEILING = 181; // up to 2 lb above the range = gold, beyond = red
+const MAINT_STREAK_DAYS = 14;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-  const weightData = [...dailyLog].filter((r) => r.Weight).sort((a, b) => a.Date.localeCompare(b.Date)).map((r) => ({ date: r.Date.slice(5), Weight: Number(r.Weight) }));
-  const completionData = [...dailyLog].sort((a, b) => a.Date.localeCompare(b.Date)).slice(-14).map((r) => ({ date: r.Date.slice(5), score: r.CompletionStatus === "Complete" ? 2 : r.CompletionStatus === "Partial" ? 1 : 0 }));
-  const exData = exerciseLog.filter((r) => r.ExerciseName === exSel).reduce((acc, r) => {
-    const found = acc.find((a) => a.date === r.Date.slice(5));
-    const w = Number(r.Weight) || 0;
-    if (found) found.Weight = Math.max(found.Weight, w); else acc.push({ date: r.Date.slice(5), Weight: w });
-    return acc;
-  }, []).sort((a, b) => a.date.localeCompare(b.date));
-  const runData = [...runLog].sort((a, b) => a.Date.localeCompare(b.Date)).map((r) => {
-    const [m, s] = String(r.Pace).split(":").map(Number);
-    return { date: r.Date.slice(5), Pace: m + (s || 0) / 60 };
+const dayIndex = (dateStr) => { const [y, m, d] = String(dateStr).split("-").map(Number); return Math.round(Date.UTC(y, m - 1, d) / 86400000); };
+const idxToDateStr = (idx) => { const d = new Date(idx * 86400000); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`; };
+const idxLabel = (idx) => { const d = new Date(Math.round(idx) * 86400000); return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`; };
+const meanOf = (a) => a.reduce((s, x) => s + x, 0) / a.length;
+const signed = (v, digits = 1) => `${v > 0 ? "+" : ""}${v.toFixed(digits)}`;
+
+// Parses "m:ss", "h:mm:ss" or a plain number into minutes.
+function parseClock(str) {
+  if (str === null || str === undefined || str === "") return NaN;
+  const s = String(str).trim();
+  if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+  const parts = s.split(":").map(Number);
+  if (parts.some((p) => isNaN(p))) return NaN;
+  if (parts.length === 2) return parts[0] + parts[1] / 60;
+  if (parts.length === 3) return parts[0] * 60 + parts[1] + parts[2] / 60;
+  return NaN;
+}
+const formatPace = (min) => { if (!isFinite(min)) return ""; const m = Math.floor(min); const s = Math.round((min - m) * 60); return s === 60 ? `${m + 1}:00` : `${m}:${String(s).padStart(2, "0")}`; };
+
+// Ordinary least squares on {x, y}; returns value at x=0 (a) and slope (b).
+function linFit(pts) {
+  const mx = meanOf(pts.map((p) => p.x)), my = meanOf(pts.map((p) => p.y));
+  let sxx = 0, sxy = 0;
+  pts.forEach((p) => { sxx += (p.x - mx) * (p.x - mx); sxy += (p.x - mx) * (p.y - my); });
+  const b = sxx > 0 ? sxy / sxx : 0;
+  return { a: my - b * mx, b };
+}
+
+// Regression over the trailing `base` days ending at day d, using real
+// elapsed days as x. Needs `minPts` points; if the base window is too sparse
+// it widens backward (up to maxSpan days) until it has enough.
+function windowFit(pts, d, base = 7, maxSpan = 30, minPts = 3) {
+  const cand = pts.filter((p) => p.t <= d && p.t > d - maxSpan);
+  if (cand.length < 2) return null;
+  let span = base;
+  if (cand.filter((p) => p.t > d - base).length < minPts) span = cand.length >= minPts ? d - cand[cand.length - minPts].t + 1 : maxSpan;
+  const win = cand.filter((p) => p.t > d - span);
+  if (win.length < 2) return null;
+  const f = linFit(win.map((p) => ({ x: p.t - d, y: p.v })));
+  return { value: f.a, slope: f.b };
+}
+
+// Deterministic "random" color runs so the rainbow is stable across reloads.
+function mulberry32(a) { return function () { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function buildRainbowMap(startT, endT) {
+  const rand = mulberry32(20260921);
+  const map = new Map();
+  let t = dayIndex("2025-01-01");
+  while (t <= endT) {
+    const len = 1 + Math.floor(rand() * 3);
+    const c = RAINBOW[Math.floor(rand() * RAINBOW.length)];
+    for (let k = 0; k < len && t <= endT; k++, t++) if (t >= startT) map.set(t, c);
+  }
+  return map;
+}
+
+function weightColor(v, slopeWk, maintenance, t, rainbowMap) {
+  if (v < GOAL_LOW) return { color: REDC, label: "Below goal range" };
+  if (maintenance) {
+    if (v <= GOAL_HIGH) return { color: rainbowMap.get(t) || ACCENT, label: "Holding goal range" };
+    if (v <= GOLD_CEILING) return { color: GOLD, label: "Slightly above goal range" };
+    return { color: REDC, label: "Above goal range" };
+  }
+  if (v <= GOAL_HIGH) return { color: ACCENT, label: "In goal range" };
+  if (slopeWk < -2) return { color: WHITE_C, label: "Losing faster than 2 lb/wk" };
+  if (slopeWk <= -1) return { color: ACCENT, label: "On pace (1–2 lb/wk)" };
+  if (slopeWk < -0.25) return { color: GOLD, label: "Losing, under pace" };
+  return { color: REDC, label: "Stalled or gaining" };
+}
+
+function computeWeightAnalysis(dailyLog, todayIdx, windowDays = 10) {
+  const byDay = new Map();
+  dailyLog.forEach((r) => {
+    const w = parseFloat(r.Weight);
+    if (DATE_RE.test(String(r.Date)) && !isNaN(w) && w > 50 && w < 700) byDay.set(dayIndex(r.Date), w);
   });
+  const raw = [...byDay.entries()].map(([t, v]) => ({ t, v })).sort((a, b) => a.t - b.t);
+  if (raw.length < 2) return { raw, trend: [], latest: null, maintenance: false, lastT: raw.length ? raw[0].t : null };
+  const lastT = raw[raw.length - 1].t;
+  const fits = [];
+  for (let d = raw[0].t; d <= lastT; d++) {
+    const f = windowFit(raw, d, windowDays, Math.max(30, windowDays * 2));
+    if (f) fits.push({ t: d, v: f.value, slopeWk: f.slope * 7, dashed: false });
+  }
+  if (!fits.length) return { raw, trend: [], latest: null, maintenance: false, lastT };
+  // Projection: extend the last real trend at its current slope up to today.
+  const lastFit = fits[fits.length - 1];
+  for (let d = lastT + 1; d <= todayIdx; d++) fits.push({ t: d, v: lastFit.v + (lastFit.slopeWk / 7) * (d - lastFit.t), slopeWk: lastFit.slopeWk, dashed: true });
+  const rainbowMap = buildRainbowMap(fits[0].t, fits[fits.length - 1].t);
+  let maintenance = false, streak = 0, maintStart = null;
+  const trend = fits.map((p) => {
+    if (!maintenance && !p.dashed) {
+      streak = p.v >= GOAL_LOW && p.v <= GOAL_HIGH ? streak + 1 : 0;
+      if (streak >= MAINT_STREAK_DAYS) { maintenance = true; maintStart = p.t; }
+    }
+    const inMaint = maintenance && p.t > maintStart;
+    return { ...p, inMaint, ...weightColor(p.v, p.slopeWk, inMaint, p.t, rainbowMap) };
+  });
+  return { raw, trend, latest: trend[trend.length - 1], maintenance, lastT };
+}
+
+function computeConsistency(dailyLog, exerciseLog, anchorDate, todayIdx) {
+  const status = new Map();
+  dailyLog.forEach((r) => { if (DATE_RE.test(String(r.Date))) status.set(dayIndex(r.Date), r.CompletionStatus); });
+  let start = Infinity;
+  [...dailyLog, ...exerciseLog].forEach((r) => { if (DATE_RE.test(String(r.Date))) start = Math.min(start, dayIndex(r.Date)); });
+  if (!isFinite(start)) return { level: [], rate: [] };
+  const scored = [];
+  for (let d = start; d <= todayIdx; d++) {
+    const type = getPlanTypeForDate(idxToDateStr(d), anchorDate);
+    if (!type || type === "Rest") continue;
+    const s = status.get(d);
+    if (d === todayIdx && !s) continue; // today is still in progress
+    scored.push({ t: d, v: s === "Complete" ? 1 : s === "Partial" ? 0.5 : 0 });
+  }
+  const level = [];
+  for (let d = start; d <= todayIdx; d++) {
+    const win = scored.filter((p) => p.t <= d && p.t > d - 7);
+    if (!win.length) continue;
+    const v = meanOf(win.map((p) => p.v)) * 100;
+    level.push({ t: d, v, color: v >= 90 ? ACCENT : v >= 70 ? GOLD : REDC, label: v >= 90 ? "Consistent" : v >= 70 ? "Some misses" : "Falling off" });
+  }
+  const rate = [];
+  level.forEach((p) => {
+    const win = level.filter((q) => q.t <= p.t && q.t > p.t - 7);
+    if (win.length < 3) return;
+    const r = linFit(win.map((q) => ({ x: q.t - p.t, y: q.v }))).b * 7;
+    // Flat while already at 90%+ counts as blue: there's no higher to go.
+    const up = r > 5, down = r < -5;
+    rate.push({ t: p.t, v: r, level: p.v, color: up ? ACCENT : down ? REDC : p.v >= 90 ? ACCENT : GOLD, label: up ? "Trending up" : down ? "Trending down" : p.v >= 90 ? "Holding high" : "Flat" });
+  });
+  return { level, rate };
+}
+
+function parseTargetLow(tr) { const s = String(tr || ""); if (/s\s*$/i.test(s)) return NaN; const m = s.match(/^\s*(\d+)/); return m ? Number(m[1]) : NaN; }
+function getExerciseMeta(name, planOverrides) {
+  for (const rows of Object.values(planOverrides || {})) {
+    const f = (rows || []).find((r) => r.ExerciseName === name);
+    if (f) return { targetReps: f.TargetReps, type: f.ExerciseType || classifyExerciseType(name, f.TargetReps) };
+  }
+  const p = PLAN_EXERCISES.find((e) => e.ExerciseName === name);
+  if (p) return { targetReps: p.TargetReps, type: p.ExerciseType };
+  return { targetReps: "", type: classifyExerciseType(name, "") };
+}
+
+function buildLiftSessions(exerciseLog, name) {
+  const dedup = new Map();
+  exerciseLog.forEach((r) => { if (r.ExerciseName === name && DATE_RE.test(String(r.Date))) dedup.set(`${r.Date}|${r.SetNumber}`, r); });
+  const byDate = new Map();
+  dedup.forEach((r) => {
+    const reps = parseFloat(r.Reps);
+    if (isNaN(reps) || reps <= 0) return;
+    const w = parseFloat(r.Weight);
+    if (!byDate.has(r.Date)) byDate.set(r.Date, []);
+    byDate.get(r.Date).push({ reps, w: isNaN(w) || w <= 0 ? null : w });
+  });
+  return [...byDate.entries()].map(([date, sets]) => {
+    const reps = sets.map((s) => s.reps);
+    const ws = sets.map((s) => s.w).filter((w) => w !== null);
+    const counts = {};
+    reps.forEach((r) => { counts[r] = (counts[r] || 0) + 1; });
+    const maxCount = Math.max(...Object.values(counts));
+    const modeReps = Math.min(...Object.keys(counts).filter((k) => counts[k] === maxCount).map(Number));
+    const totalReps = reps.reduce((a, b) => a + b, 0);
+    return {
+      t: dayIndex(date), sets: sets.length, weighted: ws.length > 0,
+      avgW: ws.length ? meanOf(ws) : 0, avgReps: meanOf(reps), modeReps, totalReps, longest: Math.max(...reps),
+      volume: ws.length ? sets.reduce((a, s) => a + s.reps * (s.w || 0), 0) : totalReps,
+    };
+  }).sort((a, b) => a.t - b.t);
+}
+
+// B-graph coloring. Weighted exercises with a rep target follow the
+// double-progression cycle; everything else compares totals week over week.
+function colorLiftSessions(sessions, meta) {
+  const target = parseTargetLow(meta.targetReps);
+  const useCycle = meta.type === "weighted" && !isNaN(target) && sessions.some((s) => s.weighted);
+  if (useCycle) {
+    let ref = null, cycleStart = 0, reached = false, reachedAt = 0, prevMode = null;
+    return { mode: "cycle", target, sessions: sessions.map((s) => {
+      if (!s.weighted) return { ...s, color: SUB, label: "No weight logged" };
+      const hit = s.modeReps >= target;
+      const reset = () => { ref = s.avgW; cycleStart = s.t; reached = hit; reachedAt = s.t; };
+      let color, label;
+      if (ref === null) { reset(); color = ACCENT; label = "Baseline session"; }
+      else if (s.avgW > ref + 0.01) { reset(); color = ACCENT; label = hit ? "Weight up, target reps hit" : "Weight increased"; }
+      else if (s.avgW < ref - 0.01) { reset(); color = REDC; label = "Average weight dropped"; }
+      else if (prevMode !== null && s.modeReps < prevMode) { color = REDC; label = "Reps dropped at the same weight"; }
+      else if (!reached && hit) { reached = true; reachedAt = s.t; color = ACCENT; label = "Hit target reps — ready to add weight"; }
+      else {
+        const w = Math.floor((s.t - (reached ? reachedAt : cycleStart)) / 7);
+        color = w <= 1 ? ACCENT : w === 2 ? GOLD : w === 3 ? WHITE_C : REDC;
+        label = reached ? (w <= 1 ? "At target — ready to add weight" : `At target ${w} wks without adding weight`) : (w <= 1 ? "Rebuilding reps at new weight" : `Rebuilding reps — ${w} wks at this weight`);
+      }
+      prevMode = s.modeReps;
+      return { ...s, color, label };
+    }) };
+  }
+  const metric = (s) => (meta.type === "weighted" ? s.volume : s.totalReps);
+  let lastImprove = null;
+  return { mode: "totals", target, sessions: sessions.map((s, i) => {
+    let prior = null;
+    for (let j = i - 1; j >= 0; j--) if (sessions[j].t <= s.t - 6) { prior = sessions[j]; break; }
+    let color, label;
+    if (!prior) { color = ACCENT; label = "Baseline session"; lastImprove = s.t; }
+    else if (metric(s) > metric(prior)) { color = ACCENT; label = "Improved vs last week"; lastImprove = s.t; }
+    else if (metric(s) < metric(prior)) { color = REDC; label = "Down vs last week"; }
+    else {
+      const w = Math.floor((s.t - (lastImprove !== null ? lastImprove : s.t)) / 7);
+      color = w <= 1 ? GOLD : w === 2 ? WHITE_C : REDC;
+      label = `Flat — ${w} wk${w === 1 ? "" : "s"} since last improvement`;
+    }
+    return { ...s, color, label };
+  }) };
+}
+
+// Plan info for an exercise on a specific date (targets can differ by day,
+// e.g. Incline DB Press is 3x8 on Wednesday but 3x10 on Sunday).
+function getExerciseMetaOn(name, dateStr, planOverrides, anchorDate) {
+  const d = new Date(dateStr + "T00:00:00");
+  const ex = getEffectiveExercises(planOverrides, getWeekNumber(d, anchorDate), dayName(d)).find((e) => e.ExerciseName === name);
+  if (ex) return { targetReps: ex.TargetReps, type: ex.ExerciseType || classifyExerciseType(name, ex.TargetReps) };
+  return getExerciseMeta(name, planOverrides);
+}
+
+// Runs the progression rules separately for each rep target, so a heavier
+// 3x8 day is only ever compared with earlier 3x8 days — never read as a
+// "weight drop" against a lighter 3x10 day of the same exercise.
+function colorLiftByTarget(sessions, name, planOverrides, anchorDate) {
+  const groups = new Map();
+  sessions.forEach((s) => {
+    const meta = getExerciseMetaOn(name, idxToDateStr(s.t), planOverrides, anchorDate);
+    const key = `${meta.type}|${meta.targetReps}`;
+    if (!groups.has(key)) groups.set(key, { meta, list: [] });
+    groups.get(key).list.push(s);
+  });
+  const out = [], targets = new Set();
+  let anyCycle = false;
+  groups.forEach(({ meta, list }) => {
+    const c = colorLiftSessions(list, meta);
+    if (c.mode === "cycle") { anyCycle = true; targets.add(c.target); }
+    out.push(...c.sessions);
+  });
+  out.sort((a, b) => a.t - b.t);
+  return { mode: anyCycle ? "cycle" : "totals", targets: [...targets].sort((a, b) => a - b), sessions: out };
+}
+
+function computeRunSeries(runLog) {
+  const byDay = new Map();
+  runLog.forEach((r) => {
+    if (!DATE_RE.test(String(r.Date))) return;
+    const dist = parseFloat(r.Distance);
+    const time = parseClock(r.Time);
+    let pace = parseClock(r.Pace);
+    if (!(pace > 0) && dist > 0 && time > 0) pace = time / dist;
+    const t = dayIndex(r.Date);
+    byDay.set(t, { t, dist: dist > 0 && dist < 100 ? dist : NaN, pace: pace > 2 && pace < 40 ? pace : NaN });
+  });
+  const pts = [...byDay.values()].sort((a, b) => a.t - b.t);
+  return { pace: pts.filter((p) => !isNaN(p.pace)).map((p) => ({ t: p.t, v: p.pace })), dist: pts.filter((p) => !isNaN(p.dist)).map((p) => ({ t: p.t, v: p.dist })) };
+}
+
+// ===================== SVG chart =====================
+function niceTicks(min, max, count = 5) {
+  if (!isFinite(min) || !isFinite(max)) return { min: 0, max: 1, ticks: [0, 1] };
+  if (max - min < 1e-9) { min -= 1; max += 1; }
+  const raw = (max - min) / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step;
+  const ticks = [];
+  for (let v = lo; v <= hi + step / 2; v += step) ticks.push(Number(v.toFixed(8)));
+  return { min: lo, max: hi, ticks };
+}
+
+function SvgChart({ series, left, right, xLabel, bands = [], refLines = [] }) {
+  const wrapRef = useRef(null);
+  const [size, setSize] = useState({ w: 640, h: 300 });
+  const uid = ("c" + useId()).replace(/[^a-zA-Z0-9]/g, "");
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const update = () => { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) setSize({ w: r.width, h: r.height }); };
+    update();
+    if (typeof ResizeObserver === "undefined") { window.addEventListener("resize", update); return () => window.removeEventListener("resize", update); }
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const allPts = series.flatMap((s) => s.points);
+  let body = null;
+  if (!allPts.length) {
+    body = <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: SUB, fontSize: 15 }}>Not enough data yet</div>;
+  } else {
+    const W = size.w, H = size.h;
+    const m = { l: left ? 64 : 16, r: right ? 64 : 16, t: 12, b: xLabel ? 48 : 30 };
+    const pw = Math.max(10, W - m.l - m.r), ph = Math.max(10, H - m.t - m.b);
+    let tMin = Infinity, tMax = -Infinity;
+    allPts.forEach((p) => { tMin = Math.min(tMin, p.t); tMax = Math.max(tMax, p.t); });
+    if (tMax - tMin < 1) { tMin -= 1; tMax += 1; }
+    const xs = (t) => m.l + ((t - tMin) / (tMax - tMin)) * pw;
+    const axisInfo = (side, cfg) => {
+      if (!cfg) return null;
+      const vals = [];
+      series.filter((s) => (s.axis || "left") === side).forEach((s) => s.points.forEach((p) => vals.push(p.v)));
+      if (!vals.length) return null;
+      bands.filter((b) => (b.axis || "left") === side).forEach((b) => vals.push(b.from, b.to));
+      refLines.filter((r) => (r.axis || "left") === side).forEach((r) => vals.push(r.value));
+      if (cfg.min !== undefined) vals.push(cfg.min);
+      if (cfg.max !== undefined) vals.push(cfg.max);
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      const pad = (hi - lo) * 0.06 || 1;
+      lo -= pad; hi += pad;
+      if (cfg.clampMin !== undefined) lo = Math.max(cfg.clampMin, lo);
+      if (cfg.clampMax !== undefined) hi = Math.min(cfg.clampMax, hi);
+      const nt = niceTicks(lo, hi, 5);
+      const ys = (v) => (cfg.reversed ? m.t + ((v - nt.min) / (nt.max - nt.min)) * ph : m.t + ph - ((v - nt.min) / (nt.max - nt.min)) * ph);
+      return { ...nt, ys, cfg };
+    };
+    const L = axisInfo("left", left), R = axisInfo("right", right);
+    const axisFor = (side) => ((side || "left") === "left" ? L : R);
+
+    const span = tMax - tMin;
+    const maxTicks = Math.max(2, Math.floor(pw / 72));
+    const step = [1, 2, 3, 7, 14, 28, 56, 91, 182, 364].find((s) => span / s <= maxTicks) || 364;
+    const xt = [];
+    for (let t = Math.ceil(tMin / step) * step; t <= tMax; t += step) xt.push(t);
+
+    const defs = [], segs = [];
+    series.forEach((s, si) => {
+      const ax = axisFor(s.axis);
+      if (!ax) return;
+      const pts = s.points;
+      const op = s.opacity !== undefined ? s.opacity : 1;
+      if (!s.noLine) {
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p1 = pts[i], p2 = pts[i + 1];
+          const x1 = xs(p1.t), y1 = ax.ys(p1.v), x2 = xs(p2.t), y2 = ax.ys(p2.v);
+          const c1 = p1.color || s.color, c2 = p2.color || s.color;
+          let stroke = c1;
+          if (c1 !== c2 && (Math.abs(x2 - x1) > 0.01 || Math.abs(y2 - y1) > 0.01)) {
+            const id = `${uid}g${si}x${i}`;
+            defs.push(<linearGradient key={id} id={id} gradientUnits="userSpaceOnUse" x1={x1} y1={y1} x2={x2} y2={y2}><stop offset="0" stopColor={c1} /><stop offset="1" stopColor={c2} /></linearGradient>);
+            stroke = `url(#${id})`;
+          }
+          segs.push(<line key={`${si}l${i}`} x1={x1} y1={y1} x2={x2} y2={y2} stroke={stroke} strokeWidth={s.width || 3} strokeLinecap="round" strokeDasharray={p2.dashed ? "7 7" : undefined} opacity={op} />);
+        }
+      }
+      if (s.dots) pts.forEach((p, i) => segs.push(<circle key={`${si}d${i}`} cx={xs(p.t)} cy={ax.ys(p.v)} r={s.dotR || 4} fill={s.dotColor || p.color || s.color} opacity={op} />));
+    });
+
+    const axisText = (ax, side) => ax.ticks.map((v) => (
+      <text key={`${side}t${v}`} x={side === "left" ? m.l - 8 : m.l + pw + 8} y={ax.ys(v)} fill={ax.cfg.color || SUB} fontSize={12} textAnchor={side === "left" ? "end" : "start"} dominantBaseline="middle">{ax.cfg.format ? ax.cfg.format(v) : v}</text>
+    ));
+    body = (
+      <svg width={W} height={H} style={{ display: "block" }}>
+        <defs>{defs}</defs>
+        {bands.map((b, i) => { const ax = axisFor(b.axis); if (!ax) return null; const y1 = ax.ys(b.from), y2 = ax.ys(b.to); return <rect key={`b${i}`} x={m.l} width={pw} y={Math.min(y1, y2)} height={Math.abs(y2 - y1)} fill={b.color} opacity={0.12} />; })}
+        {(L || R).ticks.map((v) => <line key={`g${v}`} x1={m.l} x2={m.l + pw} y1={(L || R).ys(v)} y2={(L || R).ys(v)} stroke={LINE} strokeDasharray="3 5" />)}
+        {xt.map((t) => <line key={`gx${t}`} x1={xs(t)} x2={xs(t)} y1={m.t} y2={m.t + ph} stroke={LINE} strokeDasharray="3 5" opacity={0.6} />)}
+        {refLines.map((r, i) => { const ax = axisFor(r.axis); if (!ax) return null; return <line key={`r${i}`} x1={m.l} x2={m.l + pw} y1={ax.ys(r.value)} y2={ax.ys(r.value)} stroke={SUB} strokeWidth={1.5} opacity={0.7} />; })}
+        {segs}
+        {L && axisText(L, "left")}
+        {R && axisText(R, "right")}
+        {xt.map((t) => <text key={`xt${t}`} x={xs(t)} y={m.t + ph + 18} fill={SUB} fontSize={12} textAnchor="middle">{idxLabel(t)}</text>)}
+        {xLabel && <text x={m.l + pw / 2} y={H - 6} fill={SUB} fontSize={13} textAnchor="middle">{xLabel}</text>}
+        {L && L.cfg.label && <text transform={`translate(15 ${m.t + ph / 2}) rotate(-90)`} fill={L.cfg.color || SUB} fontSize={13} textAnchor="middle">{L.cfg.label}</text>}
+        {R && R.cfg.label && <text transform={`translate(${W - 15} ${m.t + ph / 2}) rotate(90)`} fill={R.cfg.color || SUB} fontSize={13} textAnchor="middle">{R.cfg.label}</text>}
+      </svg>
+    );
+  }
+  return <div ref={wrapRef} style={{ width: "100%", height: "100%", minHeight: 0, overflow: "hidden" }}>{body}</div>;
+}
+
+function LegendChip({ color, label, dashed, rainbow, dot }) {
+  const swatch = rainbow ? `linear-gradient(90deg, ${RAINBOW.join(", ")})` : dashed ? `repeating-linear-gradient(90deg, ${SUB} 0 5px, transparent 5px 9px)` : color;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: SUB, whiteSpace: "nowrap" }}>
+      <span style={{ width: dot ? 8 : 18, height: dot ? 8 : 4, borderRadius: dot ? 4 : 2, background: swatch }} />{label}
+    </span>
+  );
+}
+
+// ===================== Progress slide =====================
+function ProgressSlide({ dailyLog, exerciseLog, runLog, anchorDate, planOverrides, abSeconds, weightWindow = 21 }) {
+  const todayIdx = dayIndex(fmtDate(new Date()));
+  const liftNames = useMemo(() => [...new Set(exerciseLog.filter((r) => parseFloat(r.Reps) > 0 && r.ExerciseName).map((r) => r.ExerciseName))].sort(), [exerciseLog]);
+  const [tab, setTab] = useState(() => ["weight", "completion", "exercise", "run"][Math.floor(Math.random() * 4)]);
+  const [exSel, setExSel] = useState(() => (liftNames.length ? liftNames[Math.floor(Math.random() * liftNames.length)] : ""));
+  useEffect(() => { if (liftNames.length && !liftNames.includes(exSel)) setExSel(liftNames[Math.floor(Math.random() * liftNames.length)]); }, [liftNames]);
+
+  const hasB = tab === "completion" || tab === "exercise";
+  const [ver, setVer] = useState("A");
+  useEffect(() => {
+    setVer("A");
+    if (!hasB) return undefined;
+    const ms = Math.max(3, Number(abSeconds) || 15) * 1000;
+    const id = setInterval(() => setVer((v) => (v === "A" ? "B" : "A")), ms);
+    return () => clearInterval(id);
+  }, [tab, exSel, hasB, abSeconds]);
+
+  const weight = useMemo(() => (tab === "weight" ? computeWeightAnalysis(dailyLog, todayIdx, weightWindow) : null), [tab, dailyLog, todayIdx, weightWindow]);
+  const cons = useMemo(() => (tab === "completion" ? computeConsistency(dailyLog, exerciseLog, anchorDate, todayIdx) : null), [tab, dailyLog, exerciseLog, anchorDate, todayIdx]);
+  const lift = useMemo(() => {
+    if (tab !== "exercise" || !exSel) return null;
+    const meta = getExerciseMeta(exSel, planOverrides);
+    const sessions = buildLiftSessions(exerciseLog, exSel);
+    return { meta, sessions, colored: colorLiftByTarget(sessions, exSel, planOverrides, anchorDate) };
+  }, [tab, exSel, exerciseLog, planOverrides, anchorDate]);
+  const run = useMemo(() => (tab === "run" ? computeRunSeries(runLog) : null), [tab, runLog]);
+
   const tabs = [{ id: "weight", label: "Body weight" }, { id: "completion", label: "Consistency" }, { id: "exercise", label: "Lift progress" }, { id: "run", label: "Run pace" }];
+  let title = "", status = null, statusColor = SUB, legend = [], chart = null;
+
+  if (tab === "weight" && weight) {
+    title = `Body weight · ${weightWindow}-day trend · ${weight.maintenance ? "Maintenance" : "Cutting"}`;
+    if (weight.latest) {
+      const l = weight.latest;
+      statusColor = l.inMaint && l.v >= GOAL_LOW && l.v <= GOAL_HIGH ? ACCENT : l.color;
+      status = `${l.v.toFixed(1)} lb trend · ${signed(l.slopeWk)} lb/wk · ${l.label}${l.dashed ? ` · projected (last weigh-in ${todayIdx - weight.lastT}d ago)` : ""}`;
+    } else status = "Log a few weigh-ins to build the trend line.";
+    legend = weight.maintenance
+      ? [<LegendChip key="r" rainbow label="In range" />, <LegendChip key="g" color={GOLD} label="1–2 lb over" />, <LegendChip key="rd" color={REDC} label="Under 175 / 2+ lb over" />]
+      : [<LegendChip key="b" color={ACCENT} label="1–2 lb/wk" />, <LegendChip key="g" color={GOLD} label="Under 1 lb/wk" />, <LegendChip key="rd" color={REDC} label="Stalled / gaining" />, <LegendChip key="w" color={WHITE_C} label="Over 2 lb/wk" />];
+    legend.push(<LegendChip key="p" dashed label="Projected" />, <LegendChip key="d" dot color={SUB} label="Weigh-ins" />);
+    chart = <SvgChart series={[{ points: weight.raw, noLine: true, dots: true, dotColor: SUB, dotR: 3, opacity: 0.6 }, { points: weight.trend, width: 4 }]} left={{ label: "Weight (lb)", format: (v) => Math.round(v) }} xLabel="Date" bands={[{ from: GOAL_LOW, to: GOAL_HIGH, color: ACCENT }]} />;
+  } else if (tab === "completion" && cons) {
+    if (ver === "A") {
+      title = "Consistency · A · 7-day completion rate (scheduled days)";
+      const l = cons.level[cons.level.length - 1];
+      if (l) { status = `${Math.round(l.v)}% of scheduled sessions · ${l.label}`; statusColor = l.color; }
+      legend = [<LegendChip key="b" color={ACCENT} label="90%+" />, <LegendChip key="g" color={GOLD} label="70–89%" />, <LegendChip key="r" color={REDC} label="Under 70%" />];
+      chart = <SvgChart series={[{ points: cons.level, width: 4 }]} left={{ format: (v) => `${Math.round(v)}%`, min: 0, max: 100, clampMin: 0, clampMax: 100 }} xLabel="Date" bands={[{ from: 90, to: 100, color: ACCENT }]} />;
+    } else {
+      title = "Consistency · B · Rate of change (points per week)";
+      const l = cons.rate[cons.rate.length - 1];
+      if (l) { status = `${signed(l.v, 0)} pts/wk · ${l.label}`; statusColor = l.color; }
+      legend = [<LegendChip key="b" color={ACCENT} label="Rising / holding 90%+" />, <LegendChip key="g" color={GOLD} label="Flat" />, <LegendChip key="r" color={REDC} label="Falling" />];
+      chart = <SvgChart series={[{ points: cons.rate, width: 4 }]} left={{ format: (v) => signed(v, 0) }} xLabel="Date" refLines={[{ value: 0 }]} />;
+    }
+  } else if (tab === "exercise") {
+    if (!lift || !lift.sessions.length) {
+      title = "Lift progress";
+      status = "No lifts logged yet.";
+      chart = <SvgChart series={[]} />;
+    } else {
+      const { meta, sessions, colored } = lift;
+      const last = sessions[sessions.length - 1];
+      const isTime = meta.type === "time", isReps = meta.type === "reps";
+      if (ver === "A") {
+        title = `${exSel} · A · Raw performance`;
+        if (isTime) {
+          status = `Last session: ${formatSecondsClock(last.totalReps)} total over ${last.sets} sets`;
+          legend = [<LegendChip key="a" color={GOLD} label="Total time" />, <LegendChip key="b" color={ACCENT} label="Longest hold" />];
+          chart = <SvgChart series={[{ points: sessions.map((s) => ({ t: s.t, v: s.totalReps })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.longest })), color: ACCENT, dots: true }]} left={{ label: "Total time (s)", color: GOLD }} right={{ label: "Longest hold (s)", color: ACCENT }} xLabel="Date" />;
+        } else if (isReps || !sessions.some((s) => s.weighted)) {
+          status = `Last session: ${last.totalReps} total reps over ${last.sets} sets`;
+          legend = [<LegendChip key="a" color={GOLD} label="Total reps" />, <LegendChip key="b" color={ACCENT} label="Sets" />];
+          chart = <SvgChart series={[{ points: sessions.map((s) => ({ t: s.t, v: s.totalReps })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.sets })), color: ACCENT, dots: true }]} left={{ label: "Total reps", color: GOLD }} right={{ label: "Sets", color: ACCENT }} xLabel="Date" />;
+        } else {
+          status = `Last session: ${last.avgW.toFixed(1)} lb avg × ${last.avgReps.toFixed(1)} reps avg · ${last.sets} sets`;
+          legend = [<LegendChip key="a" color={GOLD} label="Avg weight" />, <LegendChip key="b" color={ACCENT} label="Avg reps / set" />];
+          chart = <SvgChart series={[{ points: sessions.filter((s) => s.weighted).map((s) => ({ t: s.t, v: s.avgW })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.avgReps })), color: ACCENT, dots: true }]} left={{ label: "Avg weight (lb)", color: GOLD, format: (v) => Math.round(v * 10) / 10 }} right={{ label: "Avg reps / set", color: ACCENT }} xLabel="Date" />;
+        }
+      } else {
+        const cycle = colored.mode === "cycle";
+        const metricLabel = isTime ? "Total time (s)" : isReps || meta.type !== "weighted" || !sessions.some((s) => s.weighted) ? "Total reps" : "Volume load (lb)";
+        title = `${exSel} · B · ${cycle ? `Progression cycle (target ${colored.targets.join(" / ")} reps)` : "Week-over-week total"}`;
+        const lc = colored.sessions[colored.sessions.length - 1];
+        status = lc.label;
+        statusColor = lc.color;
+        legend = cycle
+          ? [<LegendChip key="b" color={ACCENT} label="On track" />, <LegendChip key="g" color={GOLD} label="2 wks" />, <LegendChip key="w" color={WHITE_C} label="3 wks" />, <LegendChip key="r" color={REDC} label="4+ wks / regressed" />]
+          : [<LegendChip key="b" color={ACCENT} label="Improved" />, <LegendChip key="g" color={GOLD} label="Flat 1 wk" />, <LegendChip key="w" color={WHITE_C} label="Flat 2 wks" />, <LegendChip key="r" color={REDC} label="3+ wks / down" />];
+        const val = (s) => (metricLabel === "Volume load (lb)" ? s.volume : s.totalReps);
+        chart = <SvgChart series={[{ points: colored.sessions.map((s) => ({ t: s.t, v: val(s), color: s.color })), width: 4, dots: true }]} left={{ label: metricLabel, format: (v) => (v >= 1000 ? `${Math.round(v / 100) / 10}k` : Math.round(v)) }} xLabel="Date" />;
+      }
+    }
+  } else if (tab === "run" && run) {
+    title = "Run · Pace and distance";
+    const lp = run.pace[run.pace.length - 1], ld = run.dist[run.dist.length - 1];
+    status = lp || ld ? `Latest: ${ld ? `${ld.v.toFixed(2)} mi` : "—"}${lp ? ` @ ${formatPace(lp.v)}/mi` : ""}` : "No runs logged yet.";
+    legend = [<LegendChip key="p" color={GOLD} label="Pace (faster is higher)" />, <LegendChip key="d" color={ACCENT} label="Distance" />];
+    chart = <SvgChart series={[{ points: run.pace, color: GOLD, dots: true }, { axis: "right", points: run.dist, color: ACCENT, dots: true }]} left={{ label: "Pace (min/mi)", color: GOLD, reversed: true, format: formatPace }} right={{ label: "Distance (mi)", color: ACCENT, format: (v) => Math.round(v * 10) / 10 }} xLabel="Date" />;
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 16 }}>
-      <div style={{ fontSize: 22, fontWeight: 800 }}>Progress</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "20px 28px 40px 28px", gap: 10, boxSizing: "border-box" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 24, fontWeight: 800, marginRight: 6 }}>Progress</div>
         {tabs.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "6px 12px", borderRadius: 20, border: `1px solid ${tab === t.id ? ACCENT : LINE}`, background: tab === t.id ? ACCENT + "22" : "transparent", color: tab === t.id ? ACCENT : SUB, fontSize: 12, cursor: "pointer" }}>{t.label}</button>
+          <button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "7px 14px", borderRadius: 20, border: `1px solid ${tab === t.id ? ACCENT : LINE}`, background: tab === t.id ? ACCENT + "22" : "transparent", color: tab === t.id ? ACCENT : SUB, fontSize: 13, cursor: "pointer" }}>{t.label}</button>
         ))}
+        {tab === "exercise" && liftNames.length > 0 && (
+          <select value={exSel} onChange={(e) => setExSel(e.target.value)} style={{ padding: 8, borderRadius: 8, background: CARD, color: INK, border: `1px solid ${LINE}`, maxWidth: 240 }}>
+            {liftNames.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        )}
+        {hasB && (
+          <div style={{ display: "flex", borderRadius: 20, border: `1px solid ${LINE}`, overflow: "hidden", marginLeft: "auto" }}>
+            {["A", "B"].map((v) => <button key={v} onClick={() => setVer(v)} style={{ padding: "6px 14px", border: "none", background: ver === v ? GOLD + "33" : "transparent", color: ver === v ? GOLD : SUB, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{v}</button>)}
+          </div>
+        )}
       </div>
-      {tab === "exercise" && (
-        <select value={exSel} onChange={(e) => setExSel(e.target.value)} style={{ padding: 8, borderRadius: 8, background: CARD, color: INK, border: `1px solid ${LINE}`, width: 220 }}>
-          {exerciseNames.map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      )}
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          {tab === "weight" ? (
-            <LineChart data={weightData}>
-              <CartesianGrid stroke={LINE} strokeDasharray="3 3" />
-              <XAxis dataKey="date" stroke={SUB} fontSize={11} />
-              <YAxis stroke={SUB} fontSize={11} domain={["auto", "auto"]} />
-              <Tooltip contentStyle={{ background: CARD, border: `1px solid ${LINE}`, color: INK }} />
-              <Line type="monotone" dataKey="Weight" stroke={ACCENT} strokeWidth={2} dot={false} />
-            </LineChart>
-          ) : tab === "completion" ? (
-            <BarChart data={completionData}>
-              <CartesianGrid stroke={LINE} strokeDasharray="3 3" />
-              <XAxis dataKey="date" stroke={SUB} fontSize={11} />
-              <YAxis stroke={SUB} fontSize={11} domain={[0, 2]} ticks={[0, 1, 2]} tickFormatter={(v) => ["None", "Partial", "Done"][v]} />
-              <Tooltip contentStyle={{ background: CARD, border: `1px solid ${LINE}`, color: INK }} />
-              <Bar dataKey="score" fill={ACCENT} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          ) : tab === "exercise" ? (
-            <LineChart data={exData}>
-              <CartesianGrid stroke={LINE} strokeDasharray="3 3" />
-              <XAxis dataKey="date" stroke={SUB} fontSize={11} />
-              <YAxis stroke={SUB} fontSize={11} domain={["auto", "auto"]} />
-              <Tooltip contentStyle={{ background: CARD, border: `1px solid ${LINE}`, color: INK }} />
-              <Line type="monotone" dataKey="Weight" stroke={GOLD} strokeWidth={2} dot={{ r: 3 }} />
-            </LineChart>
-          ) : (
-            <LineChart data={runData}>
-              <CartesianGrid stroke={LINE} strokeDasharray="3 3" />
-              <XAxis dataKey="date" stroke={SUB} fontSize={11} />
-              <YAxis stroke={SUB} fontSize={11} domain={["auto", "auto"]} reversed />
-              <Tooltip contentStyle={{ background: CARD, border: `1px solid ${LINE}`, color: INK }} />
-              <Line type="monotone" dataKey="Pace" stroke={GOLD} strokeWidth={2} dot={{ r: 3 }} />
-            </LineChart>
-          )}
-        </ResponsiveContainer>
-      </div>
+      <div style={{ fontSize: 16, fontWeight: 700 }}>{title}</div>
+      {status && <div style={{ fontSize: 14, color: statusColor, fontWeight: 600 }}>{status}</div>}
+      <div style={{ flex: "1 1 0", minHeight: 0 }}>{chart}</div>
+      {legend.length > 0 && <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center" }}>{legend}</div>}
     </div>
   );
 }
@@ -529,17 +1087,18 @@ const SLIDE_DEFS = [{ id: "today", label: "Today" }, { id: "week", label: "Week"
 function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor }) {
   const [url, setUrl] = useState(settings.apiUrl);
   const [key, setKey] = useState(settings.apiKey);
-  const [anchor, setAnchor] = useState(settings.anchorDate);
   const [slides, setSlides] = useState(settings.slides);
   const [seconds, setSeconds] = useState(settings.slideSeconds);
   const [enabled, setEnabled] = useState(settings.slideshowEnabled);
   const [refreshMin, setRefreshMin] = useState(settings.refreshMinutes || 3);
+  const [abSecs, setAbSecs] = useState(settings.abCycleSeconds || 15);
+  const [weightWin, setWeightWin] = useState(settings.weightWindowDays || 21);
 
   const toggleSlide = (id) => setSlides((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: 24, width: 380, maxHeight: "90%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: "24px 24px 44px 24px", width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 18 }}>Settings</div>
           <X size={20} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
@@ -548,9 +1107,6 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
         <input value={url} onChange={(e) => setUrl(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
         <label style={{ fontSize: 12, color: SUB }}>Secret key</label>
         <input value={key} onChange={(e) => setKey(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-        <label style={{ fontSize: 12, color: SUB }}>Cycle anchor date (a Monday that begins Week 1)</label>
-        <input type="date" value={anchor} onChange={(e) => setAnchor(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 6, paddingTop: 12 }}>
           <label style={{ fontSize: 12, color: SUB, display: "block", marginBottom: 8 }}>Slides to display</label>
           {SLIDE_DEFS.map((s) => (
@@ -568,6 +1124,16 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
           <input type="number" min={5} value={seconds} onChange={(e) => setSeconds(Number(e.target.value))} disabled={!enabled}
             style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, opacity: enabled ? 1 : 0.5, marginTop: 4 }} />
         </div>
+        <div>
+          <label style={{ fontSize: 12, color: SUB }}>Seconds between graph versions A / B (Progress slide)</label>
+          <input type="number" min={3} value={abSecs} onChange={(e) => setAbSecs(Number(e.target.value))}
+            style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, marginTop: 4 }} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, color: SUB }}>Body weight trend window (days) — shorter reacts faster but colors get unreliable below ~14</label>
+          <input type="number" min={5} max={60} value={weightWin} onChange={(e) => setWeightWin(Number(e.target.value))}
+            style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, marginTop: 4 }} />
+        </div>
 
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 6, paddingTop: 12 }}>
           <label style={{ fontSize: 12, color: SUB }}>Auto-refresh from sheet every (minutes)</label>
@@ -575,7 +1141,7 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
             style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, marginTop: 4 }} />
         </div>
 
-        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: anchor, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled, refreshMinutes: refreshMin || 3 })}
+        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: CYCLE_ANCHOR, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled, refreshMinutes: refreshMin || 3, abCycleSeconds: abSecs || 15, weightWindowDays: Math.min(60, Math.max(5, weightWin || 21)) })}
           style={{ padding: 12, borderRadius: 10, border: "none", background: ACCENT, color: "#06211D", fontWeight: 700, marginTop: 8 }}>Save</button>
 
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 4, paddingTop: 12 }}>
@@ -597,23 +1163,23 @@ const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "S
 function PlanEditorModal({ planOverrides, onSave, onClose }) {
   const [week, setWeek] = useState(1);
   const [day, setDay] = useState("Monday");
-  const [rows, setRows] = useState(() => getEffectiveExercises(planOverrides, 1, "Monday").map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps })));
+  const [rows, setRows] = useState(() => getEffectiveExercises(planOverrides, 1, "Monday").map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps, ExerciseType: e.ExerciseType || "weighted" })));
 
-  const loadDay = (wk, dn) => setRows(getEffectiveExercises(planOverrides, wk, dn).map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps })));
+  const loadDay = (wk, dn) => setRows(getEffectiveExercises(planOverrides, wk, dn).map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps, ExerciseType: e.ExerciseType || "weighted" })));
 
   const changeWeek = (w) => { setWeek(w); loadDay(w, day); };
   const changeDay = (d) => { setDay(d); loadDay(week, d); };
 
   const updateRow = (i, field, val) => setRows((r) => r.map((row, idx) => (idx === i ? { ...row, [field]: val } : row)));
   const removeRow = (i) => setRows((r) => r.filter((_, idx) => idx !== i));
-  const addRow = () => setRows((r) => [...r, { ExerciseName: "", TargetSets: "3", TargetReps: "10" }]);
+  const addRow = () => setRows((r) => [...r, { ExerciseName: "", TargetSets: "3", TargetReps: "10", ExerciseType: "weighted" }]);
 
   const save = () => { onSave(planKey(week, day), rows.filter((r) => r.ExerciseName.trim())); };
   const resetDefault = () => { onSave(planKey(week, day), null); loadDay(week, day); };
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: 22, width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: "22px 22px 40px 22px", width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 17 }}>Edit workouts</div>
           <X size={20} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
@@ -628,11 +1194,18 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
         </div>
 
         {rows.map((row, i) => (
-          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input value={row.ExerciseName} onChange={(e) => updateRow(i, "ExerciseName", e.target.value)} placeholder="exercise name" style={{ flex: 3, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-            <input value={row.TargetSets} onChange={(e) => updateRow(i, "TargetSets", e.target.value)} placeholder="sets" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-            <input value={row.TargetReps} onChange={(e) => updateRow(i, "TargetReps", e.target.value)} placeholder="reps" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-            <Trash2 size={16} style={{ color: REDC, cursor: "pointer", flexShrink: 0 }} onClick={() => removeRow(i)} />
+          <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 8, borderBottom: `1px solid ${LINE}` }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input value={row.ExerciseName} onChange={(e) => updateRow(i, "ExerciseName", e.target.value)} placeholder="exercise name" style={{ flex: 3, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+              <input value={row.TargetSets} onChange={(e) => updateRow(i, "TargetSets", e.target.value)} placeholder="sets" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+              <input value={row.TargetReps} onChange={(e) => updateRow(i, "TargetReps", e.target.value)} placeholder="reps" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+              <Trash2 size={16} style={{ color: REDC, cursor: "pointer", flexShrink: 0 }} onClick={() => removeRow(i)} />
+            </div>
+            <select value={row.ExerciseType} onChange={(e) => updateRow(i, "ExerciseType", e.target.value)} style={{ padding: 6, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: SUB, fontSize: 12 }}>
+              <option value="weighted">Reps + weight</option>
+              <option value="reps">Reps only (bodyweight)</option>
+              <option value="time">Time-based (e.g. plank)</option>
+            </select>
           </div>
         ))}
         <button onClick={addRow} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer" }}>
@@ -649,7 +1222,7 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
   );
 }
 
-function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, planOverrides, isEditingHistorical, onDone, onSave, pendingCount }) {
+function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, queue, planOverrides, isEditingHistorical, onDone, onSave, onSwipeSave, onLocalSave, onSync, syncing, pendingCount }) {
   const wk = getWeekNumber(date, anchorDate);
   const dn = dayName(date);
   const dateStr = fmtDate(date);
@@ -657,40 +1230,117 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const exercises = useMemo(() => getEffectiveExercises(planOverrides, wk, dn), [wk, dn, planOverrides]);
   const isRunDay = ["Run", "Run+Mobility", "HIIT"].includes(planDay?.Type);
   const existingDaily = dailyLog.find((r) => r.Date === dateStr);
+  const effExerciseLog = useMemo(() => effectiveExerciseLog(exerciseLog, queue), [exerciseLog, queue]);
+  const swipeTouchX = useRef(null);
+
+  const isRestDay = planDay?.Type === "Rest";
 
   const [status, setStatus] = useState(existingDaily?.CompletionStatus || "None");
+  const [statusManual, setStatusManual] = useState(isManualFlag(existingDaily?.StatusManual));
   const [weight, setWeight] = useState(existingDaily?.Weight || "");
   const [notes, setNotes] = useState(existingDaily?.Notes || "");
   const [sets, setSets] = useState({});
   const [runData, setRunData] = useState({ Distance: "", Time: "", Pace: "" });
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [timerElapsed, setTimerElapsed] = useState({});
+  const [timerRunning, setTimerRunning] = useState({});
+  const timerIntervals = useRef({});
+  // True once anything has been changed since this day was loaded or last
+  // saved. Gates every automatic local save, so browsing days never creates
+  // queue entries — only real edits do.
+  const editedRef = useRef(false);
+  const markEdited = () => { editedRef.current = true; };
+
+  useEffect(() => () => { Object.values(timerIntervals.current).forEach(clearInterval); }, []);
 
   useEffect(() => {
+    // Anything still sitting in the local sync queue for this date is the most
+    // up-to-date version of that data — layer it on top of confirmed synced data
+    // so reopening a day never looks like the entry vanished while unsynced.
+    const pendingForDate = (queue || []).filter((item) => item.data.Date === dateStr);
+    const pendingDaily = [...pendingForDate].reverse().find((i) => i.action === "logDaily")?.data;
+    const pendingRun = [...pendingForDate].reverse().find((i) => i.action === "logRun")?.data;
+    const pendingExercise = pendingForDate.filter((i) => i.action === "logExercise");
+
     const initial = {};
     exercises.forEach((ex) => {
-      const existingRows = exerciseLog.filter((r) => r.Date === dateStr && r.ExerciseName === ex.ExerciseName).sort((a, b) => Number(a.SetNumber) - Number(b.SetNumber));
-      const count = Math.max(parseTargetSets(ex.TargetSets), existingRows.length);
-      initial[ex.ExerciseName] = Array.from({ length: count }, (_, i) => {
-        const found = existingRows.find((r) => Number(r.SetNumber) === i + 1);
-        return found ? { reps: String(found.Reps), weight: String(found.Weight) } : { reps: "", weight: "" };
-      });
+      const existingRows = exerciseLog.filter((r) => r.Date === dateStr && r.ExerciseName === ex.ExerciseName);
+      const pendingRows = pendingExercise.filter((i) => i.data.ExerciseName === ex.ExerciseName).map((i) => i.data);
+      const bySet = {};
+      existingRows.forEach((r) => { bySet[Number(r.SetNumber)] = { reps: String(r.Reps ?? ""), weight: String(r.Weight ?? "") }; });
+      pendingRows.forEach((r) => { bySet[Number(r.SetNumber)] = { reps: String(r.Reps ?? ""), weight: String(r.Weight ?? "") }; });
+      const maxSet = Math.max(parseTargetSets(ex.TargetSets), ...Object.keys(bySet).map(Number), 0);
+      initial[ex.ExerciseName] = Array.from({ length: maxSet }, (_, i) => bySet[i + 1] || { reps: "", weight: "" });
     });
     setSets(initial);
-    const dailyForDate = dailyLog.find((r) => r.Date === dateStr);
+
+    // Manual override is only honored when it was explicitly saved as one.
+    // Otherwise the status is recomputed from the sets every time.
+    const dailyForDate = pendingDaily || dailyLog.find((r) => r.Date === dateStr);
+    setStatusManual(isManualFlag(dailyForDate?.StatusManual));
     setStatus(dailyForDate?.CompletionStatus || "None");
     setWeight(dailyForDate?.Weight || "");
     setNotes(dailyForDate?.Notes || "");
-    const existingRun = runLog.find((r) => r.Date === dateStr);
+
+    const existingRun = pendingRun || runLog.find((r) => r.Date === dateStr);
     setRunData(existingRun ? { Distance: existingRun.Distance || "", Time: existingRun.Time || "", Pace: existingRun.Pace || "" } : { Distance: "", Time: "", Pace: "" });
+
+    setTimerElapsed({}); setTimerRunning({});
+    Object.values(timerIntervals.current).forEach(clearInterval);
+    timerIntervals.current = {};
+    editedRef.current = false;
   }, [dateStr]);
 
-  const addSetRow = (exName) => setSets((s) => ({ ...s, [exName]: [...(s[exName] || []), { reps: "", weight: "" }] }));
-  const updateSetRow = (exName, i, field, val) => setSets((s) => ({ ...s, [exName]: s[exName].map((r, idx) => (idx === i ? { ...r, [field]: val } : r)) }));
-  const removeSetRow = (exName, i) => setSets((s) => ({ ...s, [exName]: s[exName].filter((_, idx) => idx !== i) }));
+  // None until a set is logged, Partial once any set has reps, Complete once
+  // every set of every exercise has reps. Skipped while a manual pick stands.
+  useEffect(() => {
+    if (!statusManual) setStatus(computeAutoStatus(sets, runData, isRunDay, isRestDay));
+  }, [sets, runData, isRunDay, isRestDay, statusManual]);
+
+  const notesPlaceholder = getLastNoteForSameWeekday(dailyLog, dateStr);
+
+  const addSetRow = (exName) => { markEdited(); setSets((s) => ({ ...s, [exName]: [...(s[exName] || []), { reps: "", weight: "" }] })); };
+  const updateSetRow = (exName, i, field, val) => { markEdited(); setSets((s) => ({ ...s, [exName]: s[exName].map((r, idx) => (idx === i ? { ...r, [field]: val } : r)) })); };
+  const removeSetRow = (exName, i) => { markEdited(); setSets((s) => ({ ...s, [exName]: s[exName].filter((_, idx) => idx !== i) })); };
+  const setRunField = (field, val) => {
+    markEdited();
+    setRunData((prev) => { const next = { ...prev, [field]: val }; next.Pace = computePace(next.Distance, next.Time); return next; });
+  };
+
+  const toggleTimer = (exName, i) => {
+    const key = `${exName}__${i}`;
+    if (timerRunning[key]) {
+      clearInterval(timerIntervals.current[key]);
+      delete timerIntervals.current[key];
+      setTimerRunning((r) => ({ ...r, [key]: false }));
+      const secs = timerElapsed[key] || 0;
+      updateSetRow(exName, i, "reps", String(secs));
+    } else {
+      const startAt = Number(sets[exName]?.[i]?.reps) || 0;
+      setTimerElapsed((e) => ({ ...e, [key]: startAt }));
+      setTimerRunning((r) => ({ ...r, [key]: true }));
+      timerIntervals.current[key] = setInterval(() => {
+        setTimerElapsed((e) => ({ ...e, [key]: (e[key] || 0) + 1 }));
+      }, 1000);
+    }
+  };
+
+  const handleNotesFocus = () => { if (!notes) setNotes("• "); };
+  const handleNotesKeyDown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    markEdited();
+    const el = e.target;
+    const start = el.selectionStart, end = el.selectionEnd;
+    const insertion = "\n• ";
+    const newValue = notes.slice(0, start) + insertion + notes.slice(end);
+    setNotes(newValue);
+    requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + insertion.length; });
+  };
 
   const buildItems = () => {
-    const items = [{ action: "logDaily", data: { Date: dateStr, Weight: weight, CompletionStatus: status, Notes: notes } }];
+    const items = [{ action: "logDaily", data: { Date: dateStr, Weight: weight, CompletionStatus: status, StatusManual: statusManual ? "TRUE" : "FALSE", Notes: notes } }];
     Object.entries(sets).forEach(([exName, rows]) => {
       rows.forEach((r, i) => { if (r.reps || r.weight) items.push({ action: "logExercise", data: { Date: dateStr, ExerciseName: exName, SetNumber: i + 1, Reps: r.reps, Weight: r.weight } }); });
     });
@@ -698,78 +1348,178 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
     return items;
   };
 
+  // Always-current references so timers/listeners never save stale data.
+  const buildItemsRef = useRef(buildItems);
+  buildItemsRef.current = buildItems;
+  const onLocalSaveRef = useRef(onLocalSave);
+  onLocalSaveRef.current = onLocalSave;
+  const flushLocalRef = useRef(() => {});
+  flushLocalRef.current = () => {
+    if (!editedRef.current) return;
+    editedRef.current = false;
+    onLocalSaveRef.current(buildItemsRef.current());
+  };
+
+  // Local autosave every 60s, plus immediately when the app is backgrounded
+  // (switching apps) or this screen closes.
+  useEffect(() => {
+    const id = setInterval(() => flushLocalRef.current(), 60000);
+    const onVis = () => { if (document.visibilityState === "hidden") flushLocalRef.current(); };
+    const onPageHide = () => flushLocalRef.current();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onPageHide);
+      flushLocalRef.current();
+    };
+  }, []);
+
+  // Any date change saves the current day locally first.
+  const goToDate = (newDate) => {
+    if (editedRef.current) { editedRef.current = false; onSwipeSave(buildItems()); }
+    setDate(newDate);
+  };
+
   const handleSave = async () => {
     setSaving(true);
+    editedRef.current = false;
     const result = await onSave(buildItems());
     setSaving(false);
     if (result.fail === 0) { setJustSaved(true); setTimeout(() => setJustSaved(false), 2000); }
     if (isEditingHistorical) onDone();
   };
 
+  const handleSync = async () => {
+    const items = editedRef.current ? buildItems() : null;
+    editedRef.current = false;
+    await onSync(items);
+  };
+
   return (
-    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", height: "100%" }}>
+    <div style={{ padding: "20px 20px calc(20px + env(safe-area-inset-bottom, 0px) + 100px) 20px", display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
       {isEditingHistorical && (
         <button onClick={onDone} style={{ display: "flex", alignItems: "center", gap: 4, alignSelf: "flex-start", fontSize: 13, color: SUB, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
           <ChevronLeft size={16} /> Back
         </button>
       )}
-      <input type="date" value={dateStr} onChange={(e) => setDate(new Date(e.target.value + "T00:00:00"))} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, fontSize: 15 }} />
+      <input type="date" value={dateStr} onChange={(e) => { if (e.target.value) goToDate(new Date(e.target.value + "T00:00:00")); }} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, fontSize: 15 }} />
       <div style={{ fontSize: 13, color: ACCENT, fontWeight: 700 }}>Week {wk} · {planDay?.Type} · {planDay?.MuscleGroups}</div>
 
-      {exercises.map((ex) => (
-        <div key={ex.ExerciseName} style={{ background: CARD, borderRadius: 10, padding: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <span style={{ fontWeight: 600, fontSize: 14 }}>{ex.ExerciseName}</span>
-            <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+      {exercises.map((ex) => {
+        const exRows = sets[ex.ExerciseName] || [];
+        const filledReps = exRows.filter((r) => r.reps).length;
+        const exStatus = filledReps === 0 ? "None" : filledReps === exRows.length ? "Complete" : "Partial";
+        const stripeColor = statusColor(exStatus);
+        const type = ex.ExerciseType || "weighted";
+        const lastSchedDate = getLastScheduledDate(ex.ExerciseName, dateStr, anchorDate, planOverrides);
+        let lastStatus = null;
+        if (lastSchedDate) {
+          const rowsOnThatDate = effExerciseLog.filter((r) => r.Date === lastSchedDate && r.ExerciseName === ex.ExerciseName);
+          const lastFilled = rowsOnThatDate.filter((r) => r.Reps).length;
+          lastStatus = rowsOnThatDate.length === 0 ? "None" : lastFilled === 0 ? "None" : lastFilled === rowsOnThatDate.length ? "Complete" : "Partial";
+        }
+        const ghostColor = lastStatus ? statusColor(lastStatus) + "55" : "transparent";
+        return (
+          <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 22px" }}>
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: ghostColor, borderRadius: "10px 0 0 10px" }} title="Status last time" />
+            <div style={{ position: "absolute", left: 5, top: 0, bottom: 0, width: 5, background: stripeColor }} />
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
+              <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+            </div>
+            {exRows.map((row, i) => {
+              const ph = rowPlaceholder(effExerciseLog, ex.ExerciseName, dateStr, i);
+              const timerKey = `${ex.ExerciseName}__${i}`;
+              const isTiming = timerRunning[timerKey];
+              return (
+                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
+                  {type === "time" ? (
+                    <>
+                      <div style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: isTiming ? ACCENT : INK, fontFamily: "ui-monospace, Menlo, monospace" }}>
+                        {isTiming ? formatSecondsClock(timerElapsed[timerKey]) : row.reps ? formatSecondsClock(row.reps) : ph.reps ? `${formatSecondsClock(ph.reps)} last time` : "0:00"}
+                      </div>
+                      <button onClick={() => toggleTimer(ex.ExerciseName, i)} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: isTiming ? REDC : ACCENT, color: isTiming ? "#fff" : "#06211D", fontWeight: 700, cursor: "pointer" }}>
+                        {isTiming ? "Stop" : "Start"}
+                      </button>
+                    </>
+                  ) : (
+                    <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  )}
+                  {type === "weighted" && (
+                    <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                  )}
+                  <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
+                </div>
+              );
+            })}
+            <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
+              <Plus size={14} /> Add set
+            </button>
           </div>
-          {(sets[ex.ExerciseName] || []).map((row, i) => {
-            const ph = rowPlaceholder(exerciseLog, ex.ExerciseName, dateStr, i);
-            return (
-              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
-                <input placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                <input placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
-              </div>
-            );
-          })}
-          <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
-            <Plus size={14} /> Add set
-          </button>
-        </div>
-      ))}
+        );
+      })}
 
       {isRunDay && (
         <div style={{ background: CARD, borderRadius: 10, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Run</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunData({ ...runData, Distance: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-            <input placeholder="time (mm:ss)" value={runData.Time} onChange={(e) => setRunData({ ...runData, Time: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-            <input placeholder="pace (mm:ss)" value={runData.Pace} onChange={(e) => setRunData({ ...runData, Pace: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input inputMode="decimal" placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunField("Distance", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input placeholder="time (mm:ss)" value={runData.Time} onChange={(e) => setRunField("Time", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input placeholder="pace (auto)" value={runData.Pace} readOnly title="Calculated automatically from distance and time" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: SUB, cursor: "default" }} />
           </div>
         </div>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <input placeholder="body weight" value={weight} onChange={(e) => setWeight(e.target.value)} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
-        <Segmented value={status} onChange={setStatus} options={STATUS_OPTS} />
+        <input inputMode="decimal" placeholder="body weight" value={weight} onChange={(e) => { markEdited(); setWeight(e.target.value); }} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
+        <Segmented value={status} onChange={(v) => { markEdited(); setStatus(v); setStatusManual(true); }} options={STATUS_OPTS} />
       </div>
-      <textarea placeholder="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
+      <textarea placeholder={notesPlaceholder || "notes"} value={notes} onChange={(e) => { markEdited(); setNotes(e.target.value); }} onFocus={handleNotesFocus} onKeyDown={handleNotesKeyDown} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
 
       <button onClick={handleSave} disabled={saving} style={{
         padding: 14, borderRadius: 10, border: "none",
-        background: saving ? SLATE : pendingCount > 0 ? GOLD : ACCENT,
-        color: pendingCount > 0 && !saving ? "#332405" : "#06211D",
+        background: saving ? SLATE : ACCENT, color: "#06211D",
         fontWeight: 700, cursor: saving ? "default" : "pointer",
       }}>
-        {saving ? "Saving…" : pendingCount > 0 ? `Sync now (${pendingCount} pending)` : justSaved ? "Saved ✓" : isEditingHistorical ? "Save & return" : "Save"}
+        {saving ? "Saving…" : justSaved ? "Saved ✓" : isEditingHistorical ? "Save & return" : "Save"}
       </button>
+
+      <button onClick={handleSync} disabled={syncing} style={{
+        padding: 14, borderRadius: 10,
+        border: `1px solid ${pendingCount > 0 ? GOLD : LINE}`,
+        background: pendingCount > 0 ? GOLD : CARD,
+        color: pendingCount > 0 ? "#332405" : INK,
+        fontWeight: 700, cursor: syncing ? "default" : "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+      }}>
+        <RefreshCw size={16} className={syncing ? "spin" : ""} />
+        {syncing ? "Syncing…" : pendingCount > 0 ? `Sync (${pendingCount} pending)` : "Sync"}
+      </button>
+
+      {!isEditingHistorical && (
+        <div
+          onTouchStart={(e) => { swipeTouchX.current = e.touches[0].clientX; }}
+          onTouchEnd={(e) => {
+            if (swipeTouchX.current == null) return;
+            const dx = e.changedTouches[0].clientX - swipeTouchX.current;
+            swipeTouchX.current = null;
+            if (Math.abs(dx) < 50) return;
+            goToDate(addDays(date, dx < 0 ? 1 : -1));
+          }}
+          style={{ padding: 14, borderRadius: 10, border: `1px solid ${ACCENT}`, background: "transparent", color: ACCENT, fontWeight: 700, textAlign: "center", userSelect: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+        >
+          <ChevronLeft size={16} /> Swipe for another day <ChevronRight size={16} />
+        </div>
+      )}
     </div>
   );
 }
 
 export default function WorkoutTracker() {
-  const [settings, setSettings] = useState({ apiUrl: "", apiKey: "", anchorDate: fmtDate(startOfWeek(new Date())), slides: ["today", "week", "month", "progress"], slideSeconds: 150, slideshowEnabled: true });
+  const [settings, setSettings] = useState({ apiUrl: "", apiKey: "", anchorDate: CYCLE_ANCHOR, slides: ["today", "week", "month", "progress"], slideSeconds: 150, slideshowEnabled: true, abCycleSeconds: 15, weightWindowDays: 21 });
   const [showSettings, setShowSettings] = useState(false);
   const [mode, setMode] = useState(typeof window !== "undefined" && window.innerWidth < 700 ? "entry" : "display");
   const [slide, setSlide] = useState(0);
@@ -778,6 +1528,8 @@ export default function WorkoutTracker() {
   const [exerciseLog, setExerciseLog] = useState([]);
   const [runLog, setRunLog] = useState([]);
   const [queue, setQueue] = useState([]);
+  const queueRef = useRef([]);
+  useEffect(() => { queueRef.current = queue; }, [queue]);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [calendarNotes, setCalendarNotes] = useState({});
@@ -785,18 +1537,70 @@ export default function WorkoutTracker() {
   const [viewDate, setViewDate] = useState(new Date());
   const [showPlanEditor, setShowPlanEditor] = useState(false);
   const [editContext, setEditContext] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenSupported = typeof document !== "undefined" && !!document.fullscreenEnabled;
   const touchStart = useRef(null);
+  const wakeLockRef = useRef(null);
+
+  const requestWakeLock = async () => {
+    try {
+      if ("wakeLock" in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request("screen");
+      }
+    } catch {
+      // permission denied, unsupported, or backgrounded — silently skip
+    }
+  };
+  const releaseWakeLock = () => {
+    wakeLockRef.current?.release().catch(() => {});
+    wakeLockRef.current = null;
+  };
+
+  useEffect(() => {
+    if (mode === "display") requestWakeLock(); else releaseWakeLock();
+    return releaseWakeLock;
+  }, [mode]);
+
+  // Wake locks are auto-released when the tab is hidden (e.g. screen briefly
+  // dimmed, app backgrounded) — re-acquire once it's visible again.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && mode === "display" && !wakeLockRef.current) requestWakeLock();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [mode]);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  };
+
+  const [hydrated, setHydrated] = useState(false);
+  const effDaily = useMemo(() => overlayPending(dailyLog, queue, "logDaily"), [dailyLog, queue]);
+  const effExercise = useMemo(() => effectiveExerciseLog(exerciseLog, queue), [exerciseLog, queue]);
+  const effRun = useMemo(() => overlayPending(runLog, queue, "logRun"), [runLog, queue]);
 
   useEffect(() => {
     (async () => {
       const s = await storeGet("settings", null);
-      if (s) setSettings((prev) => ({ ...prev, ...s }));
+      if (s) setSettings((prev) => ({ ...prev, ...s, anchorDate: CYCLE_ANCHOR }));
       setDailyLog(await storeGet("dailyLog", []));
       setExerciseLog(await storeGet("exerciseLog", []));
       setRunLog(await storeGet("runLog", []));
       setQueue(await storeGet("queue", []));
       setCalendarNotes(await storeGet("calendarNotes", {}));
       setPlanOverrides(await storeGet("planOverrides", {}));
+      setHydrated(true);
     })();
   }, []);
 
@@ -842,8 +1646,10 @@ export default function WorkoutTracker() {
 
   const fetchAll = useCallback(async (s) => {
     if (!s.apiUrl || !s.apiKey) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
-      const res = await fetch(`${s.apiUrl}?key=${encodeURIComponent(s.apiKey)}&action=getAll`);
+      const res = await fetch(`${s.apiUrl}?key=${encodeURIComponent(s.apiKey)}&action=getAll`, { signal: controller.signal });
       const data = await res.json();
       if (data.error) { setSyncMsg(`Fetch error: ${data.error}`); return; }
       setDailyLog(data.dailyLog || []); setExerciseLog(data.exerciseLog || []); setRunLog(data.runLog || []);
@@ -854,7 +1660,7 @@ export default function WorkoutTracker() {
         setCalendarNotes(notesObj);
         storeSet("calendarNotes", notesObj);
       }
-    } catch (err) { setSyncMsg(`Couldn't reach the sheet (${err.message})`); }
+    } catch (err) { setSyncMsg(`Couldn't reach the sheet (${err.message})`); } finally { clearTimeout(timer); }
   }, []);
 
   useEffect(() => { if (settings.apiUrl) fetchAll(settings); }, [settings.apiUrl]);
@@ -886,31 +1692,88 @@ export default function WorkoutTracker() {
     return q;
   };
 
-  const postOne = async (item) => {
-    const res = await fetch(settings.apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ key: settings.apiKey, ...item }) });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
+  // Sends everything in one HTTP round trip instead of one request per item —
+  // on a slow/flaky connection this is the difference between a handful of
+  // seconds and a minute-plus, and it means a dropped connection loses at most
+  // one round trip's worth of progress instead of failing partway through a
+  // long sequential chain. A 20s timeout keeps a hung request from leaving the
+  // UI stuck on "Saving…" forever.
+  const postBatch = async (items) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    try {
+      const res = await fetch(settings.apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ key: settings.apiKey, action: "logBatch", items }),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data;
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   // Single entry point for both "save this entry" and "manual refresh": merges any
-  // new items into the queue (replacing same-key items so nothing stacks), pushes
-  // everything pending to the sheet, then re-fetches so every screen reflects it.
+  // new items into the queue (replacing same-key items so nothing stacks — and
+  // persisting to local storage immediately, before any network call), pushes
+  // everything pending to the sheet in one batch, then re-fetches so every
+  // screen reflects it. Reads/writes go through queueRef so two overlapping
+  // calls (e.g. a save plus a manual refresh) can't clobber each other.
+  // Merges items into the queue and persists locally — synchronous from the
+  // caller's point of view (no network wait), used to guarantee nothing is
+  // lost when navigating away (e.g. swiping to another day) before the
+  // person has explicitly hit Save. A background sync is kicked off after,
+  // but navigation never has to wait for it.
+  const saveLocalOnly = (items) => {
+    if (!items || !items.length) return;
+    const merged = mergeQueue(queueRef.current, items);
+    queueRef.current = merged;
+    setQueue(merged); storeSet("queue", merged);
+    setSyncMsg("Autosaved on this device");
+  };
+  const saveLocalAndSyncInBackground = (items) => {
+    saveLocalOnly(items);
+    pushQueue(null); // fire and forget
+  };
+
   const pushQueue = async (itemsToMerge) => {
     setSyncing(true); setSyncMsg("");
-    const merged = itemsToMerge ? mergeQueue(queue, itemsToMerge) : [...queue];
+    const merged = itemsToMerge ? mergeQueue(queueRef.current, itemsToMerge) : [...queueRef.current];
+    queueRef.current = merged;
     if (itemsToMerge) { setQueue(merged); storeSet("queue", merged); }
+
     if (!settings.apiUrl) {
       setSyncing(false);
       setSyncMsg(itemsToMerge ? "Saved locally — add your Apps Script URL in Settings to sync" : "Set your Apps Script URL and key in Settings first.");
       return { ok: 0, fail: merged.length };
     }
-    let ok = 0; const remaining = [];
-    for (const item of merged) { try { await postOne(item); ok++; } catch { remaining.push(item); } }
-    setQueue(remaining); storeSet("queue", remaining);
-    await fetchAll(settings);
-    setSyncing(false);
-    setSyncMsg(remaining.length > 0 ? `Saved ${ok}, ${remaining.length} pending — will retry` : ok > 0 ? `Saved ${ok} item${ok === 1 ? "" : "s"}` : "Up to date");
-    return { ok, fail: remaining.length };
+    if (merged.length === 0) {
+      await fetchAll(settings);
+      setSyncing(false);
+      setSyncMsg("Up to date");
+      return { ok: 0, fail: 0 };
+    }
+    try {
+      const result = await postBatch(merged);
+      const failedIdx = new Set((result.results || []).filter((r) => !r.success).map((r) => r.index));
+      const remaining = merged.filter((_, idx) => failedIdx.has(idx));
+      const ok = merged.length - remaining.length;
+      queueRef.current = remaining;
+      setQueue(remaining); storeSet("queue", remaining);
+      await fetchAll(settings);
+      setSyncing(false);
+      setSyncMsg(remaining.length > 0 ? `Saved ${ok}, ${remaining.length} pending — will retry` : `Saved ${ok} item${ok === 1 ? "" : "s"}`);
+      return { ok, fail: remaining.length };
+    } catch (err) {
+      // Whole batch failed (offline, timeout, etc.) — everything stays queued,
+      // already safely on disk from the merge above, nothing is lost.
+      setSyncing(false);
+      setSyncMsg(`Couldn't reach the sheet — ${merged.length} pending, will retry`);
+      return { ok: 0, fail: merged.length };
+    }
   };
 
   const now = new Date();
@@ -923,10 +1786,10 @@ export default function WorkoutTracker() {
   const navMonth = (delta) => setViewDate((d) => (delta === "today" ? new Date() : addMonths(d, delta)));
 
   const slideComponents = {
-    today: <TodaySlide key="t" date={now} weekNum={todayWk} planDay={todayPlanDay} exercises={todayExercises} dailyLog={dailyLog} />,
-    week: <WeekSlide key="w" date={viewDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} calendarNotes={calendarNotes} onSaveNote={onSaveNote} onNav={navWeek} planOverrides={planOverrides} onEditDay={(ds) => startEditDay(ds, "week")} />,
-    month: <MonthSlide key="m" date={viewDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} calendarNotes={calendarNotes} onSaveNote={onSaveNote} onNav={navMonth} onEditDay={(ds) => startEditDay(ds, "month")} />,
-    progress: <ProgressSlide key="p" dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} />,
+    today: <TodaySlide key="t" date={now} weekNum={todayWk} planDay={todayPlanDay} exercises={todayExercises} dailyLog={effDaily} />,
+    week: <WeekSlide key="w" date={viewDate} anchorDate={settings.anchorDate} dailyLog={effDaily} exerciseLog={effExercise} calendarNotes={calendarNotes} onSaveNote={onSaveNote} onNav={navWeek} planOverrides={planOverrides} onEditDay={(ds) => startEditDay(ds, "week")} />,
+    month: <MonthSlide key="m" date={viewDate} anchorDate={settings.anchorDate} dailyLog={effDaily} exerciseLog={effExercise} calendarNotes={calendarNotes} onSaveNote={onSaveNote} onNav={navMonth} onEditDay={(ds) => startEditDay(ds, "month")} />,
+    progress: <ProgressSlide key="p" dailyLog={effDaily} exerciseLog={effExercise} runLog={effRun} anchorDate={settings.anchorDate} planOverrides={planOverrides} abSeconds={settings.abCycleSeconds || 15} weightWindow={settings.weightWindowDays || 21} />,
   };
   const slidesToShow = activeSlides.map((s) => slideComponents[s.id]);
 
@@ -938,22 +1801,31 @@ export default function WorkoutTracker() {
     touchStart.current = null;
   };
 
+  if (!hydrated) {
+    return (
+      <div style={{ width: "100%", height: "100vh", background: BG, color: SUB, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, -apple-system, sans-serif", fontSize: 14 }}>
+        Loading…
+      </div>
+    );
+  }
+
   return (
-    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden" }}>
+    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", paddingLeft: "env(safe-area-inset-left, 0px)", paddingRight: "env(safe-area-inset-right, 0px)", boxSizing: "border-box" }}>
       <style>{`.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}} input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}`}</style>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: `1px solid ${LINE}` }}>
-        <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
-        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(12px + env(safe-area-inset-top, 0px)) 16px 12px 16px", borderBottom: `1px solid ${LINE}` }}>
+        <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
+        <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
           {syncMsg && <span style={{ fontSize: 11, color: SUB, maxWidth: 200, textAlign: "right" }}>{syncMsg}</span>}
-          <RefreshCw size={18} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
-          {mode === "display" ? <Smartphone size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={18} style={{ cursor: "pointer", color: SUB }} onClick={finishEdit} />}
-          <Settings size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => setShowSettings(true)} />
+          <RefreshCw size={30} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB, padding: 6 }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
+          {fullscreenSupported && (isFullscreen ? <Minimize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} /> : <Maximize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} />)}
+          {mode === "display" ? <Smartphone size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={finishEdit} />}
+          <Settings size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => setShowSettings(true)} />
         </div>
       </div>
 
       {mode === "display" ? (
-        <div style={{ height: "calc(100% - 45px)", position: "relative" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           {slidesToShow[slide]}
           {slidesToShow.length > 1 && (
             <>
@@ -966,8 +1838,8 @@ export default function WorkoutTracker() {
           )}
         </div>
       ) : (
-        <div style={{ height: "calc(100% - 45px)" }}>
-          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} pendingCount={queue.length} />
+        <div style={{ flex: "1 1 auto", minHeight: 0 }}>
+          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} queue={queue} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} onSwipeSave={saveLocalAndSyncInBackground} onLocalSave={saveLocalOnly} onSync={(items) => pushQueue(items)} syncing={syncing} pendingCount={queue.length} />
         </div>
       )}
 
