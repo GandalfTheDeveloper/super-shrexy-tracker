@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Settings, ChevronLeft, ChevronRight, Smartphone, Monitor, RefreshCw, Plus, Trash2, X, Maximize2, Minimize2 } from "lucide-react";
+import { Settings, ChevronLeft, ChevronRight, Smartphone, Monitor, RefreshCw, Plus, Trash2, X } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 
 const PLAN_DAYS = [
@@ -100,17 +100,9 @@ const RAW_EX = `1,Monday,1,Back,Cable Rows,3,12
 2,Sunday,14,Triceps,Overhead Tricep Extension,3,12
 2,Sunday,15,Triceps,Face Pulls,2,12`;
 
-// "weighted" (reps + weight), "reps" (bodyweight, reps only), "time" (timer, seconds only)
-const REPS_ONLY_NAMES = new Set(["Hanging Leg Raises", "Ab Roller", "Slow Pushups"]);
-function classifyExerciseType(name, targetReps) {
-  if (/s$/i.test(String(targetReps || "").trim())) return "time";
-  if (REPS_ONLY_NAMES.has(name)) return "reps";
-  return "weighted";
-}
-
 const PLAN_EXERCISES = RAW_EX.split("\n").map((line) => {
   const [Week, DayOfWeek, Order, MuscleGroup, ExerciseName, TargetSets, TargetReps] = line.split(",");
-  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps, ExerciseType: classifyExerciseType(ExerciseName, TargetReps) };
+  return { Week: Number(Week), DayOfWeek, Order: Number(Order), MuscleGroup, ExerciseName, TargetSets, TargetReps };
 });
 
 // ---- Palette: dark teal base, turquoise / mustard gold / red accents ----
@@ -142,21 +134,10 @@ function getWeekNumber(date, anchorStr) {
   return mod === 0 ? 1 : 2;
 }
 const parseTargetSets = (ts) => { const n = parseInt(ts, 10); return isNaN(n) ? 1 : n; };
-// Fixed once, on purpose: this used to be a per-device editable setting, which
-// let each device's local storage drift out of sync with the others (one
-// device says Week 1, another says Week 2, for the same calendar day).
-// Sep 21, 2026 is a confirmed Week 1 Monday.
-const CYCLE_ANCHOR = "2026-09-21";
-const effectiveStatus = (planType, entry) => entry?.CompletionStatus || (planType === "Rest" ? "Complete" : "None");
-function getPlanTypeForDate(dateStr, anchorDate) {
-  const d = new Date(dateStr + "T00:00:00");
-  const wk = getWeekNumber(d, anchorDate);
-  return PLAN_DAYS.find((p) => p.Week === wk && p.DayOfWeek === dayName(d))?.Type;
-}
 const planKey = (wk, dn) => `${wk}-${dn}`;
 function getEffectiveExercises(overrides, wk, dn) {
   const key = planKey(wk, dn);
-  if (overrides && overrides[key]) return overrides[key].map((e, i) => ({ ...e, Week: wk, DayOfWeek: dn, Order: i + 1, ExerciseType: e.ExerciseType || "weighted" }));
+  if (overrides && overrides[key]) return overrides[key].map((e, i) => ({ ...e, Week: wk, DayOfWeek: dn, Order: i + 1 }));
   return PLAN_EXERCISES.filter((e) => e.Week === wk && e.DayOfWeek === dn).sort((a, b) => a.Order - b.Order);
 }
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
@@ -180,32 +161,6 @@ async function storeSet(key, value) {
 }
 
 // ---- History-based placeholder logic ----
-function effectiveExerciseLog(exerciseLog, queue) {
-  const pending = (queue || []).filter((i) => i.action === "logExercise").map((i) => i.data);
-  if (!pending.length) return exerciseLog;
-  const key = (r) => `${r.Date}|${r.ExerciseName}|${r.SetNumber}`;
-  const map = new Map();
-  exerciseLog.forEach((r) => map.set(key(r), r));
-  pending.forEach((r) => map.set(key(r), r));
-  return [...map.values()];
-}
-
-// Finds the most recent PAST calendar date this exercise was actually
-// scheduled to happen, per the plan (walks backward day by day). Distinct
-// from getLastSession: this does NOT skip a date just because nothing was
-// logged for it — a skipped session should still count as "last time."
-function getLastScheduledDate(exName, dateStr, anchorDate, planOverrides) {
-  let d = addDays(new Date(dateStr + "T00:00:00"), -1);
-  for (let i = 0; i < 21; i++) {
-    const wk = getWeekNumber(d, anchorDate);
-    const dn = dayName(d);
-    const dayExercises = getEffectiveExercises(planOverrides, wk, dn);
-    if (dayExercises.some((e) => e.ExerciseName === exName)) return fmtDate(d);
-    d = addDays(d, -1);
-  }
-  return null;
-}
-
 function getLastSession(exerciseLog, name, beforeDateStr) {
   const dates = [...new Set(exerciseLog.filter((r) => r.ExerciseName === name && r.Date < beforeDateStr).map((r) => r.Date))].sort();
   if (!dates.length) return [];
@@ -268,55 +223,6 @@ function generateDemoData() {
   return { daily, exercise, run };
 }
 
-function getLastNoteForSameWeekday(dailyLog, dateStr) {
-  const d = new Date(dateStr + "T00:00:00");
-  const dn = dayName(d);
-  const candidates = dailyLog
-    .filter((r) => r.Date < dateStr && r.Notes)
-    .filter((r) => dayName(new Date(r.Date + "T00:00:00")) === dn)
-    .sort((a, b) => b.Date.localeCompare(a.Date));
-  return candidates[0]?.Notes || "";
-}
-
-function computePace(distance, time) {
-  const dist = parseFloat(distance);
-  if (!dist || dist <= 0 || !time) return "";
-  const parts = String(time).split(":").map(Number);
-  let totalSeconds;
-  if (parts.length === 2 && !parts.some(isNaN)) totalSeconds = parts[0] * 60 + parts[1];
-  else if (parts.length === 1 && !isNaN(parts[0])) totalSeconds = parts[0] * 60;
-  else return "";
-  const paceSeconds = totalSeconds / dist;
-  if (!isFinite(paceSeconds) || paceSeconds <= 0) return "";
-  const m = Math.floor(paceSeconds / 60);
-  const s = Math.round(paceSeconds % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function formatSecondsClock(totalSeconds) {
-  const n = Number(totalSeconds);
-  if (!n || n < 0) return "0:00";
-  const m = Math.floor(n / 60);
-  const s = Math.floor(n % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function computeAutoStatus(setsObj, runD, isRunDay) {
-  const allRows = Object.values(setsObj).flat();
-  if (allRows.length > 0) {
-    const filled = allRows.filter((r) => r.reps);
-    if (filled.length === 0) return isRunDay && (runD.Distance || runD.Time) ? "Partial" : "None";
-    if (filled.length === allRows.length) return "Complete";
-    return "Partial";
-  }
-  if (isRunDay) {
-    if (runD.Distance && runD.Time) return "Complete";
-    if (runD.Distance || runD.Time) return "Partial";
-    return "None";
-  }
-  return "None";
-}
-
 function rowPlaceholder(exerciseLog, exName, dateStr, rowIndex) {
   const session = getLastSession(exerciseLog, exName, dateStr);
   if (rowIndex === 0) return modeOrAverage(session);
@@ -342,7 +248,6 @@ const STATUS_OPTS = [{ value: "None", label: "None", color: REDC }, { value: "Pa
 
 function TodaySlide({ date, weekNum, planDay, exercises, dailyLog }) {
   const existing = dailyLog.find((r) => r.Date === fmtDate(date));
-  const eff = effectiveStatus(planDay?.Type, existing);
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 20, overflowY: "auto" }}>
       <div>
@@ -369,7 +274,7 @@ function TodaySlide({ date, weekNum, planDay, exercises, dailyLog }) {
         </div>
         <div>
           <div style={{ fontSize: 12, color: SUB, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Status</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: statusColor(eff) }}>{eff === "None" ? "Not logged" : eff}</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: statusColor(existing?.CompletionStatus) }}>{existing?.CompletionStatus || "Not logged"}</div>
         </div>
       </div>
       <div style={{ fontSize: 12, color: SUB, fontStyle: "italic" }}>Read-only display &middot; log sets, weight and notes from phone mode.</div>
@@ -388,11 +293,11 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 16, overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 26, fontWeight: 800 }}>{label}</div>
+        <div style={{ fontSize: 24, fontWeight: 800 }}>{label}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 15, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
@@ -405,19 +310,19 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
           const log = dailyLog.find((r) => r.Date === ds);
           const note = calendarNotes?.[ds];
           const isPast = ds < today, isToday = ds === today;
-          const color = isPast || isToday ? statusColor(effectiveStatus(plan?.Type, log)) : LINE;
+          const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
           return (
             <div key={ds} onClick={() => setEditingDate(ds)} style={{ cursor: "pointer", display: "flex", flexDirection: "column", background: CARD, borderRadius: 10, padding: 12, border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}` }}>
-              <div style={{ fontSize: 15, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
+              <div style={{ fontSize: 13, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{dn.slice(0, 3)} {d.getDate()}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: ACCENT, margin: "4px 0" }}>{plan?.Type}</div>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
                 {exList.length > 0 ? exList.map((e, i) => (
-                  <div key={i} style={{ fontSize: 14.5, color: SUB, lineHeight: 1.5, display: "flex", gap: 4 }}>
+                  <div key={i} style={{ fontSize: 12.5, color: SUB, lineHeight: 1.5, display: "flex", gap: 4 }}>
                     <span style={{ color: GOLD, flexShrink: 0 }}>&#9656;</span>{e.ExerciseName}
                   </div>
-                )) : <div style={{ fontSize: 15, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
+                )) : <div style={{ fontSize: 13, color: SUB }}>{plan?.Notes || plan?.MuscleGroups}</div>}
               </div>
-              {note && <div style={{ fontSize: 14.5, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
+              {note && <div style={{ fontSize: 12.5, color: GOLD, fontStyle: "italic", marginTop: 6, borderTop: `1px solid ${LINE}`, paddingTop: 6 }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 5, borderRadius: 3, background: (isPast || isToday) ? color : "transparent", marginTop: 8 }} />
             </div>
           );
@@ -426,7 +331,6 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
       {editingDate && (
         <DayDetailModal dateStr={editingDate} initialNote={calendarNotes?.[editingDate]}
           isPast={editingDate < today}
-          planType={getPlanTypeForDate(editingDate, anchorDate)}
           dailyEntry={dailyLog.find((r) => r.Date === editingDate)}
           exerciseEntries={exerciseLog.filter((r) => r.Date === editingDate)}
           onClose={() => setEditingDate(null)}
@@ -438,29 +342,28 @@ function WeekSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, onS
   );
 }
 
-function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isPast, planType, onSave, onClear, onClose, onEdit }) {
+function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isPast, onSave, onClear, onClose, onEdit }) {
   const [text, setText] = useState(initialNote || "");
   const grouped = exerciseEntries.reduce((acc, r) => { (acc[r.ExerciseName] = acc[r.ExerciseName] || []).push(r); return acc; }, {});
-  const eff = effectiveStatus(planType, dailyEntry);
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 25 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: "22px 22px 40px 22px", width: 340, maxHeight: "85%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: 22, width: 340, maxHeight: "85%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 15 }}>{new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</div>
           <X size={18} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
         </div>
 
-        {(
+        {isPast && (
           <div style={{ background: BG, borderRadius: 10, padding: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>{isPast ? "What you did" : "Workout"}</div>
-              {planType !== "Rest" && <button onClick={() => onEdit(dateStr)} style={{ fontSize: 11, color: ACCENT, background: "none", border: `1px solid ${ACCENT}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 700 }}>Edit</button>}
+              <div style={{ fontSize: 11, color: SUB, textTransform: "uppercase", letterSpacing: 1 }}>What you did</div>
+              <button onClick={() => onEdit(dateStr)} style={{ fontSize: 11, color: ACCENT, background: "none", border: `1px solid ${ACCENT}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 700 }}>Edit</button>
             </div>
             {dailyEntry ? (
               <>
                 <div style={{ display: "flex", gap: 16, marginBottom: Object.keys(grouped).length ? 10 : 0, fontSize: 13 }}>
                   <span>Weight: <b>{dailyEntry.Weight || "—"}</b></span>
-                  <span style={{ color: statusColor(eff) }}>{eff}</span>
+                  <span style={{ color: statusColor(dailyEntry.CompletionStatus) }}>{dailyEntry.CompletionStatus || "Not logged"}</span>
                 </div>
                 {dailyEntry.Notes && <div style={{ fontSize: 12, color: SUB, marginBottom: 10, fontStyle: "italic" }}>&ldquo;{dailyEntry.Notes}&rdquo;</div>}
                 {Object.entries(grouped).map(([name, rows]) => (
@@ -472,9 +375,7 @@ function DayDetailModal({ dateStr, initialNote, dailyEntry, exerciseEntries, isP
                   </div>
                 ))}
               </>
-            ) : planType === "Rest" ? (
-              <div style={{ fontSize: 12, color: statusColor("Complete") }}>Rest day — nothing to log.</div>
-            ) : <div style={{ fontSize: 12, color: SUB }}>{isPast ? "Nothing logged for this day." : "Nothing logged yet."}</div>}
+            ) : <div style={{ fontSize: 12, color: SUB }}>Nothing logged for this day.</div>}
           </div>
         )}
 
@@ -502,19 +403,19 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
   const today = fmtDate(new Date());
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "16px 20px", gap: 10, position: "relative", boxSizing: "border-box" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 28, gap: 14, position: "relative" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 26, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
+        <div style={{ fontSize: 24, fontWeight: 800 }}>{date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ChevronLeft size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
-          <span onClick={() => onNav("today")} style={{ fontSize: 15, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
-          <ChevronRight size={24} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
+          <ChevronLeft size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(-1)} />
+          <span onClick={() => onNav("today")} style={{ fontSize: 13, color: ACCENT, cursor: "pointer", fontWeight: 700 }}>Today</span>
+          <ChevronRight size={22} style={{ cursor: "pointer", color: SUB }} onClick={() => onNav(1)} />
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 15, color: SUB, textTransform: "uppercase" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, fontSize: 13, color: SUB, textTransform: "uppercase" }}>
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "minmax(0, 1fr)", gap: 6, flex: "1 1 0", minHeight: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "1fr", gap: 6, flex: 1 }}>
         {cells.map((d, i) => {
           if (!d) return <div key={i} />;
           const wk = getWeekNumber(d, anchorDate);
@@ -524,12 +425,12 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
           const log = dailyLog.find((r) => r.Date === ds);
           const note = calendarNotes?.[ds];
           const isPast = ds < today, isToday = ds === today;
-          const color = isPast || isToday ? statusColor(effectiveStatus(plan?.Type, log)) : LINE;
+          const color = isPast || isToday ? statusColor(log?.CompletionStatus || "None") : LINE;
           return (
-            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 14, overflow: "hidden", minHeight: 0, minWidth: 0 }}>
-              <div style={{ fontSize: 17, fontWeight: 700 }}>{d.getDate()}</div>
-              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 14 }}>{label}</div>
-              {note && <div style={{ color: GOLD, fontSize: 13, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
+            <div key={i} onClick={() => setEditingDate(ds)} style={{ position: "relative", cursor: "pointer", background: CARD, borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", border: isToday ? `2px solid ${ACCENT}` : `1px solid ${LINE}`, fontSize: 12 }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>{d.getDate()}</div>
+              <div style={{ color: SUB, flex: 1, overflow: "hidden", fontSize: 12 }}>{label}</div>
+              {note && <div style={{ color: GOLD, fontSize: 11, fontStyle: "italic", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>&#9733; {note}</div>}
               <div style={{ width: "100%", height: 4, borderRadius: 2, background: (isPast || isToday) ? color : "transparent" }} />
             </div>
           );
@@ -538,7 +439,6 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
       {editingDate && (
         <DayDetailModal dateStr={editingDate} initialNote={calendarNotes?.[editingDate]}
           isPast={editingDate < today}
-          planType={getPlanTypeForDate(editingDate, anchorDate)}
           dailyEntry={dailyLog.find((r) => r.Date === editingDate)}
           exerciseEntries={exerciseLog.filter((r) => r.Date === editingDate)}
           onClose={() => setEditingDate(null)}
@@ -551,10 +451,7 @@ function MonthSlide({ date, anchorDate, dailyLog, exerciseLog, calendarNotes, on
 }
 
 function ProgressSlide({ dailyLog, exerciseLog, runLog }) {
-  const [tab, setTab] = useState(() => {
-    const opts = ["weight", "completion", "exercise", "run"];
-    return opts[Math.floor(Math.random() * opts.length)];
-  });
+  const [tab, setTab] = useState("weight");
   const exerciseNames = useMemo(() => [...new Set(exerciseLog.map((r) => r.ExerciseName))], [exerciseLog]);
   const [exSel, setExSel] = useState("");
   useEffect(() => { if (!exSel && exerciseNames.length) setExSel(exerciseNames[0]); }, [exerciseNames]);
@@ -632,6 +529,7 @@ const SLIDE_DEFS = [{ id: "today", label: "Today" }, { id: "week", label: "Week"
 function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor }) {
   const [url, setUrl] = useState(settings.apiUrl);
   const [key, setKey] = useState(settings.apiKey);
+  const [anchor, setAnchor] = useState(settings.anchorDate);
   const [slides, setSlides] = useState(settings.slides);
   const [seconds, setSeconds] = useState(settings.slideSeconds);
   const [enabled, setEnabled] = useState(settings.slideshowEnabled);
@@ -641,7 +539,7 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: "24px 24px 44px 24px", width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: 24, width: 380, maxHeight: "90%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 18 }}>Settings</div>
           <X size={20} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
@@ -650,6 +548,9 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
         <input value={url} onChange={(e) => setUrl(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
         <label style={{ fontSize: 12, color: SUB }}>Secret key</label>
         <input value={key} onChange={(e) => setKey(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+        <label style={{ fontSize: 12, color: SUB }}>Cycle anchor date (a Monday that begins Week 1)</label>
+        <input type="date" value={anchor} onChange={(e) => setAnchor(e.target.value)} style={{ padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 6, paddingTop: 12 }}>
           <label style={{ fontSize: 12, color: SUB, display: "block", marginBottom: 8 }}>Slides to display</label>
           {SLIDE_DEFS.map((s) => (
@@ -674,7 +575,7 @@ function SettingsModal({ settings, onSave, onClose, onLoadDemo, onOpenPlanEditor
             style={{ width: "100%", padding: 10, borderRadius: 8, background: BG, border: `1px solid ${LINE}`, color: INK, marginTop: 4 }} />
         </div>
 
-        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: CYCLE_ANCHOR, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled, refreshMinutes: refreshMin || 3 })}
+        <button onClick={() => onSave({ apiUrl: url, apiKey: key, anchorDate: anchor, slides: slides.length ? slides : ["today"], slideSeconds: seconds || 150, slideshowEnabled: enabled, refreshMinutes: refreshMin || 3 })}
           style={{ padding: 12, borderRadius: 10, border: "none", background: ACCENT, color: "#06211D", fontWeight: 700, marginTop: 8 }}>Save</button>
 
         <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 4, paddingTop: 12 }}>
@@ -696,23 +597,23 @@ const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "S
 function PlanEditorModal({ planOverrides, onSave, onClose }) {
   const [week, setWeek] = useState(1);
   const [day, setDay] = useState("Monday");
-  const [rows, setRows] = useState(() => getEffectiveExercises(planOverrides, 1, "Monday").map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps, ExerciseType: e.ExerciseType || "weighted" })));
+  const [rows, setRows] = useState(() => getEffectiveExercises(planOverrides, 1, "Monday").map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps })));
 
-  const loadDay = (wk, dn) => setRows(getEffectiveExercises(planOverrides, wk, dn).map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps, ExerciseType: e.ExerciseType || "weighted" })));
+  const loadDay = (wk, dn) => setRows(getEffectiveExercises(planOverrides, wk, dn).map((e) => ({ ExerciseName: e.ExerciseName, TargetSets: e.TargetSets, TargetReps: e.TargetReps })));
 
   const changeWeek = (w) => { setWeek(w); loadDay(w, day); };
   const changeDay = (d) => { setDay(d); loadDay(week, d); };
 
   const updateRow = (i, field, val) => setRows((r) => r.map((row, idx) => (idx === i ? { ...row, [field]: val } : row)));
   const removeRow = (i) => setRows((r) => r.filter((_, idx) => idx !== i));
-  const addRow = () => setRows((r) => [...r, { ExerciseName: "", TargetSets: "3", TargetReps: "10", ExerciseType: "weighted" }]);
+  const addRow = () => setRows((r) => [...r, { ExerciseName: "", TargetSets: "3", TargetReps: "10" }]);
 
   const save = () => { onSave(planKey(week, day), rows.filter((r) => r.ExerciseName.trim())); };
   const resetDefault = () => { onSave(planKey(week, day), null); loadDay(week, day); };
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30 }}>
-      <div style={{ background: CARD, borderRadius: 14, padding: "22px 22px 40px 22px", width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, boxSizing: "border-box" }}>
+      <div style={{ background: CARD, borderRadius: 14, padding: 22, width: 380, maxHeight: "88%", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 800, fontSize: 17 }}>Edit workouts</div>
           <X size={20} style={{ cursor: "pointer", color: SUB }} onClick={onClose} />
@@ -727,18 +628,11 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
         </div>
 
         {rows.map((row, i) => (
-          <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 8, borderBottom: `1px solid ${LINE}` }}>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <input value={row.ExerciseName} onChange={(e) => updateRow(i, "ExerciseName", e.target.value)} placeholder="exercise name" style={{ flex: 3, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-              <input value={row.TargetSets} onChange={(e) => updateRow(i, "TargetSets", e.target.value)} placeholder="sets" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-              <input value={row.TargetReps} onChange={(e) => updateRow(i, "TargetReps", e.target.value)} placeholder="reps" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
-              <Trash2 size={16} style={{ color: REDC, cursor: "pointer", flexShrink: 0 }} onClick={() => removeRow(i)} />
-            </div>
-            <select value={row.ExerciseType} onChange={(e) => updateRow(i, "ExerciseType", e.target.value)} style={{ padding: 6, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: SUB, fontSize: 12 }}>
-              <option value="weighted">Reps + weight</option>
-              <option value="reps">Reps only (bodyweight)</option>
-              <option value="time">Time-based (e.g. plank)</option>
-            </select>
+          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input value={row.ExerciseName} onChange={(e) => updateRow(i, "ExerciseName", e.target.value)} placeholder="exercise name" style={{ flex: 3, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+            <input value={row.TargetSets} onChange={(e) => updateRow(i, "TargetSets", e.target.value)} placeholder="sets" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+            <input value={row.TargetReps} onChange={(e) => updateRow(i, "TargetReps", e.target.value)} placeholder="reps" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK, fontSize: 13 }} />
+            <Trash2 size={16} style={{ color: REDC, cursor: "pointer", flexShrink: 0 }} onClick={() => removeRow(i)} />
           </div>
         ))}
         <button onClick={addRow} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer" }}>
@@ -755,7 +649,7 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
   );
 }
 
-function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, queue, planOverrides, isEditingHistorical, onDone, onSave, onSwipeSave, pendingCount }) {
+function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, planOverrides, isEditingHistorical, onDone, onSave, pendingCount }) {
   const wk = getWeekNumber(date, anchorDate);
   const dn = dayName(date);
   const dateStr = fmtDate(date);
@@ -763,99 +657,37 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const exercises = useMemo(() => getEffectiveExercises(planOverrides, wk, dn), [wk, dn, planOverrides]);
   const isRunDay = ["Run", "Run+Mobility", "HIIT"].includes(planDay?.Type);
   const existingDaily = dailyLog.find((r) => r.Date === dateStr);
-  const effExerciseLog = useMemo(() => effectiveExerciseLog(exerciseLog, queue), [exerciseLog, queue]);
-  const swipeTouchX = useRef(null);
 
   const [status, setStatus] = useState(existingDaily?.CompletionStatus || "None");
-  const [statusManual, setStatusManual] = useState(!!existingDaily?.CompletionStatus);
   const [weight, setWeight] = useState(existingDaily?.Weight || "");
   const [notes, setNotes] = useState(existingDaily?.Notes || "");
   const [sets, setSets] = useState({});
   const [runData, setRunData] = useState({ Distance: "", Time: "", Pace: "" });
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
-  const [timerElapsed, setTimerElapsed] = useState({});
-  const [timerRunning, setTimerRunning] = useState({});
-  const timerIntervals = useRef({});
-
-  useEffect(() => () => { Object.values(timerIntervals.current).forEach(clearInterval); }, []);
 
   useEffect(() => {
-    // Anything still sitting in the local sync queue for this date is the most
-    // up-to-date version of that data — layer it on top of confirmed synced data
-    // so reopening a day never looks like the entry vanished while unsynced.
-    const pendingForDate = (queue || []).filter((item) => item.data.Date === dateStr);
-    const pendingDaily = [...pendingForDate].reverse().find((i) => i.action === "logDaily")?.data;
-    const pendingRun = [...pendingForDate].reverse().find((i) => i.action === "logRun")?.data;
-    const pendingExercise = pendingForDate.filter((i) => i.action === "logExercise");
-
     const initial = {};
     exercises.forEach((ex) => {
-      const existingRows = exerciseLog.filter((r) => r.Date === dateStr && r.ExerciseName === ex.ExerciseName);
-      const pendingRows = pendingExercise.filter((i) => i.data.ExerciseName === ex.ExerciseName).map((i) => i.data);
-      const bySet = {};
-      existingRows.forEach((r) => { bySet[Number(r.SetNumber)] = { reps: String(r.Reps ?? ""), weight: String(r.Weight ?? "") }; });
-      pendingRows.forEach((r) => { bySet[Number(r.SetNumber)] = { reps: String(r.Reps ?? ""), weight: String(r.Weight ?? "") }; });
-      const maxSet = Math.max(parseTargetSets(ex.TargetSets), ...Object.keys(bySet).map(Number), 0);
-      initial[ex.ExerciseName] = Array.from({ length: maxSet }, (_, i) => bySet[i + 1] || { reps: "", weight: "" });
+      const existingRows = exerciseLog.filter((r) => r.Date === dateStr && r.ExerciseName === ex.ExerciseName).sort((a, b) => Number(a.SetNumber) - Number(b.SetNumber));
+      const count = Math.max(parseTargetSets(ex.TargetSets), existingRows.length);
+      initial[ex.ExerciseName] = Array.from({ length: count }, (_, i) => {
+        const found = existingRows.find((r) => Number(r.SetNumber) === i + 1);
+        return found ? { reps: String(found.Reps), weight: String(found.Weight) } : { reps: "", weight: "" };
+      });
     });
     setSets(initial);
-
-    const dailyForDate = pendingDaily || dailyLog.find((r) => r.Date === dateStr);
+    const dailyForDate = dailyLog.find((r) => r.Date === dateStr);
     setStatus(dailyForDate?.CompletionStatus || "None");
-    setStatusManual(!!pendingDaily?.CompletionStatus || !!dailyLog.find((r) => r.Date === dateStr)?.CompletionStatus);
     setWeight(dailyForDate?.Weight || "");
     setNotes(dailyForDate?.Notes || "");
-
-    const existingRun = pendingRun || runLog.find((r) => r.Date === dateStr);
+    const existingRun = runLog.find((r) => r.Date === dateStr);
     setRunData(existingRun ? { Distance: existingRun.Distance || "", Time: existingRun.Time || "", Pace: existingRun.Pace || "" } : { Distance: "", Time: "", Pace: "" });
-
-    setTimerElapsed({}); setTimerRunning({});
-    Object.values(timerIntervals.current).forEach(clearInterval);
-    timerIntervals.current = {};
   }, [dateStr]);
-
-  // Auto-derive completion status from what's actually been filled in, unless
-  // the person has explicitly picked a status themselves for this date.
-  useEffect(() => {
-    if (!statusManual) setStatus(computeAutoStatus(sets, runData, isRunDay));
-  }, [sets, runData, isRunDay, statusManual]);
-
-  const notesPlaceholder = getLastNoteForSameWeekday(dailyLog, dateStr);
 
   const addSetRow = (exName) => setSets((s) => ({ ...s, [exName]: [...(s[exName] || []), { reps: "", weight: "" }] }));
   const updateSetRow = (exName, i, field, val) => setSets((s) => ({ ...s, [exName]: s[exName].map((r, idx) => (idx === i ? { ...r, [field]: val } : r)) }));
   const removeSetRow = (exName, i) => setSets((s) => ({ ...s, [exName]: s[exName].filter((_, idx) => idx !== i) }));
-
-  const toggleTimer = (exName, i) => {
-    const key = `${exName}__${i}`;
-    if (timerRunning[key]) {
-      clearInterval(timerIntervals.current[key]);
-      delete timerIntervals.current[key];
-      setTimerRunning((r) => ({ ...r, [key]: false }));
-      const secs = timerElapsed[key] || 0;
-      updateSetRow(exName, i, "reps", String(secs));
-    } else {
-      const startAt = Number(sets[exName]?.[i]?.reps) || 0;
-      setTimerElapsed((e) => ({ ...e, [key]: startAt }));
-      setTimerRunning((r) => ({ ...r, [key]: true }));
-      timerIntervals.current[key] = setInterval(() => {
-        setTimerElapsed((e) => ({ ...e, [key]: (e[key] || 0) + 1 }));
-      }, 1000);
-    }
-  };
-
-  const handleNotesFocus = () => { if (!notes) setNotes("• "); };
-  const handleNotesKeyDown = (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    const el = e.target;
-    const start = el.selectionStart, end = el.selectionEnd;
-    const insertion = "\n• ";
-    const newValue = notes.slice(0, start) + insertion + notes.slice(end);
-    setNotes(newValue);
-    requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + insertion.length; });
-  };
 
   const buildItems = () => {
     const items = [{ action: "logDaily", data: { Date: dateStr, Weight: weight, CompletionStatus: status, Notes: notes } }];
@@ -875,7 +707,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   };
 
   return (
-    <div style={{ padding: "20px 20px calc(20px + env(safe-area-inset-bottom, 0px) + 100px) 20px", display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
+    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", height: "100%" }}>
       {isEditingHistorical && (
         <button onClick={onDone} style={{ display: "flex", alignItems: "center", gap: 4, alignSelf: "flex-start", fontSize: 13, color: SUB, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
           <ChevronLeft size={16} /> Back
@@ -884,77 +716,45 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
       <input type="date" value={dateStr} onChange={(e) => setDate(new Date(e.target.value + "T00:00:00"))} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, fontSize: 15 }} />
       <div style={{ fontSize: 13, color: ACCENT, fontWeight: 700 }}>Week {wk} · {planDay?.Type} · {planDay?.MuscleGroups}</div>
 
-      {exercises.map((ex) => {
-        const exRows = sets[ex.ExerciseName] || [];
-        const filledReps = exRows.filter((r) => r.reps).length;
-        const exStatus = filledReps === 0 ? "None" : filledReps === exRows.length ? "Complete" : "Partial";
-        const stripeColor = statusColor(exStatus);
-        const type = ex.ExerciseType || "weighted";
-        const lastSchedDate = getLastScheduledDate(ex.ExerciseName, dateStr, anchorDate, planOverrides);
-        let lastStatus = null;
-        if (lastSchedDate) {
-          const rowsOnThatDate = effExerciseLog.filter((r) => r.Date === lastSchedDate && r.ExerciseName === ex.ExerciseName);
-          const lastFilled = rowsOnThatDate.filter((r) => r.Reps).length;
-          lastStatus = rowsOnThatDate.length === 0 ? "None" : lastFilled === 0 ? "None" : lastFilled === rowsOnThatDate.length ? "Complete" : "Partial";
-        }
-        const ghostColor = lastStatus ? statusColor(lastStatus) + "55" : "transparent";
-        return (
-          <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 22px" }}>
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: ghostColor, borderRadius: "10px 0 0 10px" }} title="Status last time" />
-            <div style={{ position: "absolute", left: 5, top: 0, bottom: 0, width: 5, background: stripeColor }} />
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
-              <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
-            </div>
-            {exRows.map((row, i) => {
-              const ph = rowPlaceholder(effExerciseLog, ex.ExerciseName, dateStr, i);
-              const timerKey = `${ex.ExerciseName}__${i}`;
-              const isTiming = timerRunning[timerKey];
-              return (
-                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
-                  {type === "time" ? (
-                    <>
-                      <div style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: isTiming ? ACCENT : INK, fontFamily: "ui-monospace, Menlo, monospace" }}>
-                        {isTiming ? formatSecondsClock(timerElapsed[timerKey]) : row.reps ? formatSecondsClock(row.reps) : ph.reps ? `${formatSecondsClock(ph.reps)} last time` : "0:00"}
-                      </div>
-                      <button onClick={() => toggleTimer(ex.ExerciseName, i)} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: isTiming ? REDC : ACCENT, color: isTiming ? "#fff" : "#06211D", fontWeight: 700, cursor: "pointer" }}>
-                        {isTiming ? "Stop" : "Start"}
-                      </button>
-                    </>
-                  ) : (
-                    <input inputMode="numeric" placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                  )}
-                  {type === "weighted" && (
-                    <input inputMode="decimal" placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-                  )}
-                  <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
-                </div>
-              );
-            })}
-            <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
-              <Plus size={14} /> Add set
-            </button>
+      {exercises.map((ex) => (
+        <div key={ex.ExerciseName} style={{ background: CARD, borderRadius: 10, padding: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{ex.ExerciseName}</span>
+            <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
           </div>
-        );
-      })}
+          {(sets[ex.ExerciseName] || []).map((row, i) => {
+            const ph = rowPlaceholder(exerciseLog, ex.ExerciseName, dateStr, i);
+            return (
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: SUB, width: 16 }}>{i + 1}</span>
+                <input placeholder={ph.reps ? `${ph.reps} reps` : "reps"} value={row.reps} onChange={(e) => updateSetRow(ex.ExerciseName, i, "reps", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                <input placeholder={ph.weight ? `${ph.weight} lb` : "weight"} value={row.weight} onChange={(e) => updateSetRow(ex.ExerciseName, i, "weight", e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+                <Trash2 size={16} style={{ color: REDC, cursor: "pointer" }} onClick={() => removeSetRow(ex.ExerciseName, i)} />
+              </div>
+            );
+          })}
+          <button onClick={() => addSetRow(ex.ExerciseName)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: GOLD, background: "none", border: "none", cursor: "pointer", padding: "4px 0" }}>
+            <Plus size={14} /> Add set
+          </button>
+        </div>
+      ))}
 
       {isRunDay && (
         <div style={{ background: CARD, borderRadius: 10, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Run</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input inputMode="decimal" placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunData((prev) => ({ ...prev, Distance: e.target.value, Pace: computePace(e.target.value, prev.Time) }))} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-            <input placeholder="time (mm:ss)" value={runData.Time} onChange={(e) => setRunData((prev) => ({ ...prev, Time: e.target.value, Pace: computePace(prev.Distance, e.target.value) }))} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
-            <input placeholder="pace (auto)" value={runData.Pace} readOnly title="Calculated automatically from distance and time" style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: SUB, cursor: "default" }} />
+            <input placeholder="distance (mi)" value={runData.Distance} onChange={(e) => setRunData({ ...runData, Distance: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input placeholder="time (mm:ss)" value={runData.Time} onChange={(e) => setRunData({ ...runData, Time: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
+            <input placeholder="pace (mm:ss)" value={runData.Pace} onChange={(e) => setRunData({ ...runData, Pace: e.target.value })} style={{ flex: 1, padding: 8, borderRadius: 6, background: BG, border: `1px solid ${LINE}`, color: INK }} />
           </div>
         </div>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <input inputMode="decimal" placeholder="body weight" value={weight} onChange={(e) => setWeight(e.target.value)} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
-        <Segmented value={status} onChange={(v) => { setStatus(v); setStatusManual(true); }} options={STATUS_OPTS} />
+        <input placeholder="body weight" value={weight} onChange={(e) => setWeight(e.target.value)} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK }} />
+        <Segmented value={status} onChange={setStatus} options={STATUS_OPTS} />
       </div>
-      <textarea placeholder={notesPlaceholder || "notes"} value={notes} onChange={(e) => setNotes(e.target.value)} onFocus={handleNotesFocus} onKeyDown={handleNotesKeyDown} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
+      <textarea placeholder="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} style={{ padding: 10, borderRadius: 8, background: CARD, border: `1px solid ${LINE}`, color: INK, minHeight: 120, resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.5 }} />
 
       <button onClick={handleSave} disabled={saving} style={{
         padding: 14, borderRadius: 10, border: "none",
@@ -964,29 +764,12 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
       }}>
         {saving ? "Saving…" : pendingCount > 0 ? `Sync now (${pendingCount} pending)` : justSaved ? "Saved ✓" : isEditingHistorical ? "Save & return" : "Save"}
       </button>
-
-      {!isEditingHistorical && (
-        <div
-          onTouchStart={(e) => { swipeTouchX.current = e.touches[0].clientX; }}
-          onTouchEnd={(e) => {
-            if (swipeTouchX.current == null) return;
-            const dx = e.changedTouches[0].clientX - swipeTouchX.current;
-            swipeTouchX.current = null;
-            if (Math.abs(dx) < 50) return;
-            onSwipeSave(buildItems());
-            setDate(addDays(date, dx < 0 ? 1 : -1));
-          }}
-          style={{ padding: 14, borderRadius: 10, border: `1px solid ${ACCENT}`, background: "transparent", color: ACCENT, fontWeight: 700, textAlign: "center", userSelect: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-        >
-          <ChevronLeft size={16} /> Swipe for another day <ChevronRight size={16} />
-        </div>
-      )}
     </div>
   );
 }
 
 export default function WorkoutTracker() {
-  const [settings, setSettings] = useState({ apiUrl: "", apiKey: "", anchorDate: CYCLE_ANCHOR, slides: ["today", "week", "month", "progress"], slideSeconds: 150, slideshowEnabled: true });
+  const [settings, setSettings] = useState({ apiUrl: "", apiKey: "", anchorDate: fmtDate(startOfWeek(new Date())), slides: ["today", "week", "month", "progress"], slideSeconds: 150, slideshowEnabled: true });
   const [showSettings, setShowSettings] = useState(false);
   const [mode, setMode] = useState(typeof window !== "undefined" && window.innerWidth < 700 ? "entry" : "display");
   const [slide, setSlide] = useState(0);
@@ -995,8 +778,6 @@ export default function WorkoutTracker() {
   const [exerciseLog, setExerciseLog] = useState([]);
   const [runLog, setRunLog] = useState([]);
   const [queue, setQueue] = useState([]);
-  const queueRef = useRef([]);
-  useEffect(() => { queueRef.current = queue; }, [queue]);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [calendarNotes, setCalendarNotes] = useState({});
@@ -1004,67 +785,18 @@ export default function WorkoutTracker() {
   const [viewDate, setViewDate] = useState(new Date());
   const [showPlanEditor, setShowPlanEditor] = useState(false);
   const [editContext, setEditContext] = useState(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const fullscreenSupported = typeof document !== "undefined" && !!document.fullscreenEnabled;
   const touchStart = useRef(null);
-  const wakeLockRef = useRef(null);
-
-  const requestWakeLock = async () => {
-    try {
-      if ("wakeLock" in navigator) {
-        wakeLockRef.current = await navigator.wakeLock.request("screen");
-      }
-    } catch {
-      // permission denied, unsupported, or backgrounded — silently skip
-    }
-  };
-  const releaseWakeLock = () => {
-    wakeLockRef.current?.release().catch(() => {});
-    wakeLockRef.current = null;
-  };
-
-  useEffect(() => {
-    if (mode === "display") requestWakeLock(); else releaseWakeLock();
-    return releaseWakeLock;
-  }, [mode]);
-
-  // Wake locks are auto-released when the tab is hidden (e.g. screen briefly
-  // dimmed, app backgrounded) — re-acquire once it's visible again.
-  useEffect(() => {
-    const onVisibility = () => {
-      if (document.visibilityState === "visible" && mode === "display" && !wakeLockRef.current) requestWakeLock();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [mode]);
-
-  useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onFsChange);
-    return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, []);
-
-  const toggleFullscreen = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen?.();
-    } else {
-      document.documentElement.requestFullscreen?.().catch(() => {});
-    }
-  };
-
-  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     (async () => {
       const s = await storeGet("settings", null);
-      if (s) setSettings((prev) => ({ ...prev, ...s, anchorDate: CYCLE_ANCHOR }));
+      if (s) setSettings((prev) => ({ ...prev, ...s }));
       setDailyLog(await storeGet("dailyLog", []));
       setExerciseLog(await storeGet("exerciseLog", []));
       setRunLog(await storeGet("runLog", []));
       setQueue(await storeGet("queue", []));
       setCalendarNotes(await storeGet("calendarNotes", {}));
       setPlanOverrides(await storeGet("planOverrides", {}));
-      setHydrated(true);
     })();
   }, []);
 
@@ -1110,10 +842,8 @@ export default function WorkoutTracker() {
 
   const fetchAll = useCallback(async (s) => {
     if (!s.apiUrl || !s.apiKey) return;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
     try {
-      const res = await fetch(`${s.apiUrl}?key=${encodeURIComponent(s.apiKey)}&action=getAll`, { signal: controller.signal });
+      const res = await fetch(`${s.apiUrl}?key=${encodeURIComponent(s.apiKey)}&action=getAll`);
       const data = await res.json();
       if (data.error) { setSyncMsg(`Fetch error: ${data.error}`); return; }
       setDailyLog(data.dailyLog || []); setExerciseLog(data.exerciseLog || []); setRunLog(data.runLog || []);
@@ -1124,7 +854,7 @@ export default function WorkoutTracker() {
         setCalendarNotes(notesObj);
         storeSet("calendarNotes", notesObj);
       }
-    } catch (err) { setSyncMsg(`Couldn't reach the sheet (${err.message})`); } finally { clearTimeout(timer); }
+    } catch (err) { setSyncMsg(`Couldn't reach the sheet (${err.message})`); }
   }, []);
 
   useEffect(() => { if (settings.apiUrl) fetchAll(settings); }, [settings.apiUrl]);
@@ -1156,83 +886,31 @@ export default function WorkoutTracker() {
     return q;
   };
 
-  // Sends everything in one HTTP round trip instead of one request per item —
-  // on a slow/flaky connection this is the difference between a handful of
-  // seconds and a minute-plus, and it means a dropped connection loses at most
-  // one round trip's worth of progress instead of failing partway through a
-  // long sequential chain. A 20s timeout keeps a hung request from leaving the
-  // UI stuck on "Saving…" forever.
-  const postBatch = async (items) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
-    try {
-      const res = await fetch(settings.apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ key: settings.apiKey, action: "logBatch", items }),
-        signal: controller.signal,
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      return data;
-    } finally {
-      clearTimeout(timer);
-    }
+  const postOne = async (item) => {
+    const res = await fetch(settings.apiUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ key: settings.apiKey, ...item }) });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
   };
 
   // Single entry point for both "save this entry" and "manual refresh": merges any
-  // new items into the queue (replacing same-key items so nothing stacks — and
-  // persisting to local storage immediately, before any network call), pushes
-  // everything pending to the sheet in one batch, then re-fetches so every
-  // screen reflects it. Reads/writes go through queueRef so two overlapping
-  // calls (e.g. a save plus a manual refresh) can't clobber each other.
-  // Merges items into the queue and persists locally — synchronous from the
-  // caller's point of view (no network wait), used to guarantee nothing is
-  // lost when navigating away (e.g. swiping to another day) before the
-  // person has explicitly hit Save. A background sync is kicked off after,
-  // but navigation never has to wait for it.
-  const saveLocalAndSyncInBackground = (items) => {
-    const merged = mergeQueue(queueRef.current, items);
-    queueRef.current = merged;
-    setQueue(merged); storeSet("queue", merged);
-    pushQueue(null); // fire and forget
-  };
-
+  // new items into the queue (replacing same-key items so nothing stacks), pushes
+  // everything pending to the sheet, then re-fetches so every screen reflects it.
   const pushQueue = async (itemsToMerge) => {
     setSyncing(true); setSyncMsg("");
-    const merged = itemsToMerge ? mergeQueue(queueRef.current, itemsToMerge) : [...queueRef.current];
-    queueRef.current = merged;
+    const merged = itemsToMerge ? mergeQueue(queue, itemsToMerge) : [...queue];
     if (itemsToMerge) { setQueue(merged); storeSet("queue", merged); }
-
     if (!settings.apiUrl) {
       setSyncing(false);
       setSyncMsg(itemsToMerge ? "Saved locally — add your Apps Script URL in Settings to sync" : "Set your Apps Script URL and key in Settings first.");
       return { ok: 0, fail: merged.length };
     }
-    if (merged.length === 0) {
-      await fetchAll(settings);
-      setSyncing(false);
-      setSyncMsg("Up to date");
-      return { ok: 0, fail: 0 };
-    }
-    try {
-      const result = await postBatch(merged);
-      const failedIdx = new Set((result.results || []).filter((r) => !r.success).map((r) => r.index));
-      const remaining = merged.filter((_, idx) => failedIdx.has(idx));
-      const ok = merged.length - remaining.length;
-      queueRef.current = remaining;
-      setQueue(remaining); storeSet("queue", remaining);
-      await fetchAll(settings);
-      setSyncing(false);
-      setSyncMsg(remaining.length > 0 ? `Saved ${ok}, ${remaining.length} pending — will retry` : `Saved ${ok} item${ok === 1 ? "" : "s"}`);
-      return { ok, fail: remaining.length };
-    } catch (err) {
-      // Whole batch failed (offline, timeout, etc.) — everything stays queued,
-      // already safely on disk from the merge above, nothing is lost.
-      setSyncing(false);
-      setSyncMsg(`Couldn't reach the sheet — ${merged.length} pending, will retry`);
-      return { ok: 0, fail: merged.length };
-    }
+    let ok = 0; const remaining = [];
+    for (const item of merged) { try { await postOne(item); ok++; } catch { remaining.push(item); } }
+    setQueue(remaining); storeSet("queue", remaining);
+    await fetchAll(settings);
+    setSyncing(false);
+    setSyncMsg(remaining.length > 0 ? `Saved ${ok}, ${remaining.length} pending — will retry` : ok > 0 ? `Saved ${ok} item${ok === 1 ? "" : "s"}` : "Up to date");
+    return { ok, fail: remaining.length };
   };
 
   const now = new Date();
@@ -1260,31 +938,22 @@ export default function WorkoutTracker() {
     touchStart.current = null;
   };
 
-  if (!hydrated) {
-    return (
-      <div style={{ width: "100%", height: "100vh", background: BG, color: SUB, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, -apple-system, sans-serif", fontSize: 14 }}>
-        Loading…
-      </div>
-    );
-  }
-
   return (
-    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", paddingLeft: "env(safe-area-inset-left, 0px)", paddingRight: "env(safe-area-inset-right, 0px)", boxSizing: "border-box" }}>
+    <div style={{ width: "100%", height: "100vh", background: BG, color: INK, fontFamily: "system-ui, -apple-system, sans-serif", position: "relative", overflow: "hidden" }}>
       <style>{`.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}} input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}`}</style>
 
-      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(12px + env(safe-area-inset-top, 0px)) 16px 12px 16px", borderBottom: `1px solid ${LINE}` }}>
-        <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
-        <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: `1px solid ${LINE}` }}>
+        <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: 1, color: ACCENT, textTransform: "uppercase" }}>Super Shrexy Tracker</div>
+        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
           {syncMsg && <span style={{ fontSize: 11, color: SUB, maxWidth: 200, textAlign: "right" }}>{syncMsg}</span>}
-          <RefreshCw size={30} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB, padding: 6 }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
-          {fullscreenSupported && (isFullscreen ? <Minimize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} /> : <Maximize2 size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={toggleFullscreen} />)}
-          {mode === "display" ? <Smartphone size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={finishEdit} />}
-          <Settings size={30} style={{ cursor: "pointer", color: SUB, padding: 6 }} onClick={() => setShowSettings(true)} />
+          <RefreshCw size={18} className={syncing ? "spin" : ""} style={{ cursor: "pointer", color: queue.length ? GOLD : SUB }} onClick={() => (settings.apiUrl ? pushQueue(null) : setShowSettings(true))} />
+          {mode === "display" ? <Smartphone size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => { setEditContext(null); setMode("entry"); }} /> : <Monitor size={18} style={{ cursor: "pointer", color: SUB }} onClick={finishEdit} />}
+          <Settings size={18} style={{ cursor: "pointer", color: SUB }} onClick={() => setShowSettings(true)} />
         </div>
       </div>
 
       {mode === "display" ? (
-        <div style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div style={{ height: "calc(100% - 45px)", position: "relative" }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           {slidesToShow[slide]}
           {slidesToShow.length > 1 && (
             <>
@@ -1297,8 +966,8 @@ export default function WorkoutTracker() {
           )}
         </div>
       ) : (
-        <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} queue={queue} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} onSwipeSave={saveLocalAndSyncInBackground} pendingCount={queue.length} />
+        <div style={{ height: "calc(100% - 45px)" }}>
+          <LogEntryView date={logDate} setDate={setLogDate} anchorDate={settings.anchorDate} dailyLog={dailyLog} exerciseLog={exerciseLog} runLog={runLog} planOverrides={planOverrides} isEditingHistorical={!!editContext} onDone={finishEdit} onSave={pushQueue} pendingCount={queue.length} />
         </div>
       )}
 
