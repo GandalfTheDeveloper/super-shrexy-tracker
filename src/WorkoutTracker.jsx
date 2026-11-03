@@ -1428,30 +1428,28 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
   );
 }
 
-// Original clip-art-style ogre head icon (not Shrek — a generic ogre face
-// with two ears poking up out of the top) for progressive overload, tinted
-// to match the overload bar on the card.
+// Original minimalist ogre-face icon (not Shrek) for progressive overload:
+// a broad egg-shaped head with a short forehead, straight antenna ears,
+// a big nose, and angry, determined eyebrows. Tinted to match the
+// overload bar on the card.
 function OverloadIcon({ color, size = 16 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" style={{ display: "block" }}>
-      {/* ears, poking up out of the top of the head */}
-      <path d="M5 10.5 C4 6.5 6 3 8.3 4 C9.6 4.5 9.6 7.8 9 9.8 Z" fill={color} opacity="0.75" />
-      <path d="M19 10.5 C20 6.5 18 3 15.7 4 C14.4 4.5 14.4 7.8 15 9.8 Z" fill={color} opacity="0.75" />
-      {/* head */}
-      <path d="M12 5.3 C16.5 5.3 18.6 8.7 18.1 12.8 C17.7 16.5 15.6 19.6 12 19.6 C8.4 19.6 6.3 16.5 5.9 12.8 C5.4 8.7 7.5 5.3 12 5.3 Z" fill={color} opacity="0.95" />
-      {/* brow ridge */}
-      <path d="M7.6 10.6 C9 9.6 10.6 9.6 11.9 10.4" stroke="#06211D" strokeWidth="1.1" strokeLinecap="round" fill="none" opacity="0.55" />
-      <path d="M16.4 10.6 C15 9.6 13.4 9.6 12.1 10.4" stroke="#06211D" strokeWidth="1.1" strokeLinecap="round" fill="none" opacity="0.55" />
-      {/* eyes */}
-      <circle cx="9.3" cy="12.4" r="1" fill="#06211D" opacity="0.8" />
-      <circle cx="14.7" cy="12.4" r="1" fill="#06211D" opacity="0.8" />
-      {/* nose */}
-      <circle cx="11.2" cy="14.8" r="0.7" fill="#06211D" opacity="0.4" />
-      <circle cx="12.8" cy="14.8" r="0.7" fill="#06211D" opacity="0.4" />
-      {/* mouth with small tusks */}
-      <path d="M9 16.6 C10.3 18 13.7 18 15 16.6" stroke="#06211D" strokeWidth="1.1" strokeLinecap="round" fill="none" opacity="0.55" />
-      <path d="M9.7 16.9 L9.4 18.1 L10.4 17.3 Z" fill="#F4F7F6" opacity="0.9" />
-      <path d="M14.3 16.9 L14.6 18.1 L13.6 17.3 Z" fill="#F4F7F6" opacity="0.9" />
+      {/* straight antenna-style ears */}
+      <path d="M8.6 7.3 L6.6 2.4" fill="none" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="6.3" cy="1.8" r="0.9" fill={color} />
+      <path d="M15.4 7.3 L17.4 2.4" fill="none" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="17.7" cy="1.8" r="0.9" fill={color} />
+      {/* egg shape: short narrow top, broad rounded bottom */}
+      <path d="M12 5.0 C 8.8 5.0 6.3 7.3 6.0 10.3 C 5.7 13.4 6.5 17.0 9.0 19.6 C 10.2 20.8 13.8 20.8 15.0 19.6 C 17.5 17.0 18.3 13.4 18.0 10.3 C 17.7 7.3 15.2 5.0 12 5.0 Z" fill="none" stroke={color} strokeWidth="1.3" strokeLinejoin="round" />
+      {/* angry, determined eyebrows, short forehead above them */}
+      <path d="M7.6 9.6 L10.6 11.1" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M16.4 9.6 L13.4 11.1" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+      {/* eyes, spaced wider */}
+      <circle cx="9.4" cy="13" r="1" fill={color} />
+      <circle cx="14.6" cy="13" r="1" fill={color} />
+      {/* big nose */}
+      <path d="M10.6 15 C9.8 16.6 9.6 17.8 10.6 18.6 C11.5 19.3 12.5 19.3 13.4 18.6 C14.4 17.8 14.2 16.6 13.4 15" fill="none" stroke={color} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
