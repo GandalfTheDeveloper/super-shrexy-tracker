@@ -844,6 +844,120 @@ function colorLiftByTarget(sessions, name, planOverrides, anchorDate) {
   return { mode: anyCycle ? "cycle" : "totals", targets: [...targets].sort((a, b) => a - b), sessions: out };
 }
 
+// ---------- Progressive overload: live status + "what lands where" breakdown ----------
+const groupKeyOn = (name, dateStr, planOverrides, anchorDate) => { const m = getExerciseMetaOn(name, dateStr, planOverrides, anchorDate); return `${m.type}|${m.targetReps}`; };
+const fmtLb = (w) => (Math.abs(w - Math.round(w)) < 0.05 ? String(Math.round(w)) : w.toFixed(1));
+const setsToRows = (name, dateStr, setList) => setList.map((st, i) => ({ Date: dateStr, ExerciseName: name, SetNumber: i + 1, Reps: String(st.reps), Weight: st.w ? String(st.w) : "" }));
+
+// Earlier sessions of this exercise that share today's rep target (the same
+// grouping the B graph uses), oldest first.
+function sameGroupHistory(rows, name, dateStr, planOverrides, anchorDate) {
+  const key = groupKeyOn(name, dateStr, planOverrides, anchorDate);
+  const hist = rows.filter((r) => r.ExerciseName === name && DATE_RE.test(String(r.Date)) && r.Date < dateStr);
+  return buildLiftSessions(hist, name).filter((s) => groupKeyOn(name, idxToDateStr(s.t), planOverrides, anchorDate) === key);
+}
+
+// The B-graph color this exercise currently carries: today's result once every
+// set for today is filled in, otherwise the status from the last session.
+function liftStatusNow(rows, name, dateStr, todaySets, planOverrides, anchorDate) {
+  const meta = getExerciseMetaOn(name, dateStr, planOverrides, anchorDate);
+  const list = sameGroupHistory(rows, name, dateStr, planOverrides, anchorDate);
+  const done = todaySets.length > 0 && todaySets.every((st) => String(st.reps).trim() !== "");
+  if (done) {
+    const today = buildLiftSessions(setsToRows(name, dateStr, todaySets.map((st) => ({ reps: st.reps, w: st.weight }))), name)[0];
+    if (today) list.push(today);
+  }
+  if (!list.length) return null;
+  const last = colorLiftSessions(list, meta).sessions[list.length - 1];
+  return { color: last.color, label: last.label, isToday: done };
+}
+
+// For today's session: which weight/rep outcomes earn which color. Computed by
+// running the real B-graph rules on candidate sessions, so it can never drift
+// from what the graph will actually show.
+function liftOutlook(rows, name, dateStr, planOverrides, anchorDate, targetSets) {
+  const meta = getExerciseMetaOn(name, dateStr, planOverrides, anchorDate);
+  const hist = sameGroupHistory(rows, name, dateStr, planOverrides, anchorDate);
+  const D = dayIndex(dateStr);
+  const n = Math.max(1, parseTargetSets(targetSets));
+  const target = parseTargetLow(meta.targetReps);
+  const isTime = meta.type === "time";
+  const colorAt = (t, setList) => {
+    const hypo = buildLiftSessions(setsToRows(name, idxToDateStr(t), setList), name)[0];
+    return colorLiftSessions([...hist, hypo], meta).sessions[hist.length].color;
+  };
+  const order = [ACCENT, GOLD, WHITE_C, REDC];
+  const frags = new Map(order.map((c) => [c, []]));
+  const add = (c, txt) => { if (frags.has(c)) frags.get(c).push(txt); };
+  const titles = {};
+  let context = "", mode;
+
+  if (!hist.length) {
+    mode = "baseline";
+    add(ACCENT, "Any session — this one sets your baseline");
+    context = "No earlier sessions at this rep target yet.";
+  } else if (meta.type === "weighted" && !isNaN(target) && hist.some((x) => x.weighted)) {
+    mode = "cycle";
+    const lw = [...hist].reverse().find((x) => x.weighted);
+    const ref = lw.avgW, prev = lw.modeReps;
+    const R = Math.max(target, prev) + 3;
+    const rangeTxt = (a, b) => (a === 1 && b === R ? "any reps" : b === R ? `${a}+ reps` : a === 1 ? `under ${b + 1} reps` : a === b ? `${a} reps` : `${a}–${b} reps`);
+    const classes = [
+      { w: ref + 5, label: `Over ${fmtLb(ref)} lb` },
+      { w: ref, label: `${fmtLb(ref)} lb` },
+      ...(ref > 5 ? [{ w: ref - 5, label: `Under ${fmtLb(ref)} lb` }] : []),
+    ];
+    classes.forEach(({ w, label }) => {
+      const cols = []; for (let r = 1; r <= R; r++) cols.push(colorAt(D, Array(n).fill({ reps: r, w })));
+      for (let a = 1; a <= R;) {
+        let b = a; while (b < R && cols[b] === cols[a - 1]) b++;
+        add(cols[a - 1], a === 1 && b === R ? (label.startsWith("Under") ? label : `${label}, any reps`) : `${label} × ${rangeTxt(a, b)}`);
+        a = b + 1;
+      }
+    });
+    const atTarget = prev >= target;
+    const stay = Array(n).fill({ reps: prev, w: ref });
+    [GOLD, WHITE_C].forEach((c) => {
+      if (frags.get(c).length) return;
+      for (let k = 1; k <= 8; k++) if (colorAt(D + 7 * k, stay) === c) {
+        titles[c] = `Not today — from ${idxLabel(D + 7 * k)} if you stay at ${fmtLb(ref)} lb ${atTarget ? "without adding weight" : `under ${target} reps`}`;
+        break;
+      }
+      if (!titles[c]) titles[c] = `Already past this stage — adding weight${atTarget ? "" : ` or hitting ${target} reps`} resets you to blue`;
+    });
+    context = `Last time (${idxLabel(lw.t)}): ${fmtLb(ref)} lb × ${prev} reps · target ${target} reps`;
+  } else {
+    mode = "totals";
+    const metric = (x) => (meta.type === "weighted" ? x.volume : x.totalReps);
+    const prior = [...hist].reverse().find((x) => x.t <= D - 6);
+    if (!prior) {
+      add(ACCENT, "Any session — no session from a week ago to compare against");
+      context = "Compares with your session from about a week ago.";
+    } else {
+      const P = metric(prior);
+      const fmt = (v) => (isTime ? formatSecondsClock(v) : meta.type === "weighted" ? `${Math.round(v)} lb volume` : `${v} reps`);
+      const unit = isTime ? "total time" : meta.type === "weighted" ? "" : "total";
+      const split = (tot) => { const base = Math.floor(tot / n), extra = tot % n; return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0)); };
+      const mk = (tot) => (meta.type === "weighted" ? [{ reps: 1, w: tot }] : split(tot).filter((x) => x > 0).map((x) => ({ reps: x, w: null })));
+      const per = (tot) => { const sp = split(tot); return isTime ? sp.map(formatSecondsClock).join(" + ") : sp.join(" + "); };
+      add(colorAt(D, mk(P + 1)), `More than ${fmt(P)} ${unit}`.trim() + (meta.type === "weighted" ? "" : ` (e.g. ${per(P + 1)})`));
+      add(colorAt(D, mk(P)), `Exactly ${fmt(P)} ${unit}`.trim());
+      if (P > 1) add(colorAt(D, mk(P - 1)), `Less than ${fmt(P)} ${unit}`.trim());
+      [GOLD, WHITE_C].forEach((c) => {
+        if (frags.get(c).length) return;
+        for (let k = 1; k <= 8; k++) if (colorAt(D + 7 * k, mk(P)) === c) { titles[c] = `Not today — from ${idxLabel(D + 7 * k)} if you stay at exactly ${fmt(P)}`; break; }
+        if (!titles[c]) titles[c] = `Already past this stage — beating ${fmt(P)} resets you to blue`;
+      });
+      context = `Compared with ${idxLabel(prior.t)}: ${fmt(P)} ${unit}`.trim();
+    }
+  }
+  const names = mode === "totals"
+    ? { [ACCENT]: "Improving", [GOLD]: "Flat 1 week", [WHITE_C]: "Flat 2 weeks", [REDC]: "Stalled / down" }
+    : { [ACCENT]: "On track", [GOLD]: "2 weeks", [WHITE_C]: "3 weeks — slowing", [REDC]: "Stalled / regressed" };
+  const lines = order.map((c) => ({ color: c, name: names[c], text: frags.get(c).join(" · or ") || titles[c] || "Not possible this session", possible: frags.get(c).length > 0 }));
+  return { mode, context, lines };
+}
+
 function computeRunSeries(runLog) {
   const byDay = new Map();
   runLog.forEach((r) => {
@@ -969,15 +1083,26 @@ function SvgChart({ series, left, right, xLabel, bands = [], refLines = [] }) {
           // across a multi-day gap between weigh-ins).
           const mids = [];
           if (s.colorAt && x2 - x1 > 0.5) for (let t = Math.floor(p1.t) + 1; t < p2.t; t++) { const c = s.colorAt(t, p1, p2); if (c) mids.push({ o: (xs(t) - x1) / (x2 - x1), c }); }
-          let stroke = c1;
-          if ((c1 !== c2 || mids.length) && x2 - x1 > 0.01) {
+          const gapT = p2.t - p1.t;
+          let stops = null;
+          if (mids.length) stops = [{ o: 0, c: c1 }, ...mids, { o: 1, c: c2 }];
+          // endColor: a segment represents the stretch leading up to its end
+          // point, so it carries that point's color — with only a one-day
+          // fade at the start, so daily weigh-ins still blend smoothly.
+          else if (c1 !== c2 && s.endColor) stops = [{ o: 0, c: c1 }, { o: Math.min(1, 1 / Math.max(gapT, 1)), c: c2 }, { o: 1, c: c2 }];
+          else if (c1 !== c2) stops = [{ o: 0, c: c1 }, { o: 1, c: c2 }];
+          let stroke = c1 === c2 && !stops ? c1 : c2;
+          if (stops && x2 - x1 > 0.01) {
             const id = `${uid}g${si}x${i}`;
-            defs.push(<linearGradient key={id} id={id} gradientUnits="userSpaceOnUse" x1={x1} y1={0} x2={x2} y2={0}><stop offset="0" stopColor={c1} />{mids.map((m, k) => <stop key={k} offset={m.o} stopColor={m.c} />)}<stop offset="1" stopColor={c2} /></linearGradient>);
+            defs.push(<linearGradient key={id} id={id} gradientUnits="userSpaceOnUse" x1={x1} y1={0} x2={x2} y2={0}>{stops.map((st, k) => <stop key={k} offset={st.o} stopColor={st.c} />)}</linearGradient>);
             stroke = `url(#${id})`;
           }
           const dashed = p2.dashed;
+          // A curve across a long gap would invent a shape between two known
+          // points; past straightOverDays the segment is drawn straight.
+          const straight = s.straightOverDays !== undefined && gapT > s.straightOverDays;
           const common = { stroke, strokeWidth: s.width || 3, strokeLinecap: "round", fill: "none", opacity: op, strokeDasharray: dashed ? "7 7" : undefined };
-          if (tan && !dashed && i + 1 < solidN) {
+          if (tan && !dashed && !straight && i + 1 < solidN) {
             const dx = (x2 - x1) / 3;
             segs.push(<path key={`${si}l${i}`} d={`M${x1},${y1}C${x1 + dx},${y1 + tan[i] * dx},${x2 - dx},${y2 - tan[i + 1] * dx},${x2},${y2}`} {...common} />);
           } else {
@@ -1021,6 +1146,50 @@ function LegendChip({ color, label, dashed, rainbow, dot }) {
 }
 
 // ===================== Progress slide =====================
+// Lift progress chart (A = raw performance, B = progression colors). Shared by
+// the Progress slide and the phone's long-press exercise popup.
+function liftChartView(lift, exSel, ver) {
+  let title = "", status = null, statusColor = SUB, legend = [], chart = null;
+    if (!lift || !lift.sessions.length) {
+      title = "Lift progress";
+      status = "No lifts logged yet.";
+      chart = <SvgChart series={[]} />;
+    } else {
+      const { meta, sessions, colored } = lift;
+      const last = sessions[sessions.length - 1];
+      const isTime = meta.type === "time", isReps = meta.type === "reps";
+      if (ver === "A") {
+        title = `${exSel} · A · Raw performance`;
+        if (isTime) {
+          status = `Last session: ${formatSecondsClock(last.totalReps)} total over ${last.sets} sets`;
+          legend = [<LegendChip key="a" color={GOLD} label="Total time" />, <LegendChip key="b" color={ACCENT} label="Longest hold" />];
+          chart = <SvgChart series={[{ points: sessions.map((s) => ({ t: s.t, v: s.totalReps })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.longest })), color: ACCENT, dots: true }]} left={{ label: "Total time (s)", color: GOLD }} right={{ label: "Longest hold (s)", color: ACCENT }} xLabel="Date" />;
+        } else if (isReps || !sessions.some((s) => s.weighted)) {
+          status = `Last session: ${last.totalReps} total reps over ${last.sets} sets`;
+          legend = [<LegendChip key="a" color={GOLD} label="Total reps" />, <LegendChip key="b" color={ACCENT} label="Sets" />];
+          chart = <SvgChart series={[{ points: sessions.map((s) => ({ t: s.t, v: s.totalReps })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.sets })), color: ACCENT, dots: true }]} left={{ label: "Total reps", color: GOLD }} right={{ label: "Sets", color: ACCENT }} xLabel="Date" />;
+        } else {
+          status = `Last session: ${last.avgW.toFixed(1)} lb avg × ${last.avgReps.toFixed(1)} reps avg · ${last.sets} sets`;
+          legend = [<LegendChip key="a" color={GOLD} label="Avg weight" />, <LegendChip key="b" color={ACCENT} label="Avg reps / set" />];
+          chart = <SvgChart series={[{ points: sessions.filter((s) => s.weighted).map((s) => ({ t: s.t, v: s.avgW })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.avgReps })), color: ACCENT, dots: true }]} left={{ label: "Avg weight (lb)", color: GOLD, format: (v) => Math.round(v * 10) / 10 }} right={{ label: "Avg reps / set", color: ACCENT }} xLabel="Date" />;
+        }
+      } else {
+        const cycle = colored.mode === "cycle";
+        const metricLabel = isTime ? "Total time (s)" : isReps || meta.type !== "weighted" || !sessions.some((s) => s.weighted) ? "Total reps" : "Volume load (lb)";
+        title = `${exSel} · B · ${cycle ? `Progression cycle (target ${colored.targets.join(" / ")} reps)` : "Week-over-week total"}`;
+        const lc = colored.sessions[colored.sessions.length - 1];
+        status = lc.label;
+        statusColor = lc.color;
+        legend = cycle
+          ? [<LegendChip key="b" color={ACCENT} label="On track" />, <LegendChip key="g" color={GOLD} label="2 wks" />, <LegendChip key="w" color={WHITE_C} label="3 wks" />, <LegendChip key="r" color={REDC} label="4+ wks / regressed" />]
+          : [<LegendChip key="b" color={ACCENT} label="Improved" />, <LegendChip key="g" color={GOLD} label="Flat 1 wk" />, <LegendChip key="w" color={WHITE_C} label="Flat 2 wks" />, <LegendChip key="r" color={REDC} label="3+ wks / down" />];
+        const val = (s) => (metricLabel === "Volume load (lb)" ? s.volume : s.totalReps);
+        chart = <SvgChart series={[{ points: colored.sessions.map((s) => ({ t: s.t, v: val(s), color: s.color })), width: 4, dots: true }]} left={{ label: metricLabel, format: (v) => (v >= 1000 ? `${Math.round(v / 100) / 10}k` : Math.round(v)) }} xLabel="Date" />;
+      }
+    }
+  return { title, status, statusColor, legend, chart };
+}
+
 function ProgressSlide({ dailyLog, exerciseLog, runLog, anchorDate, planOverrides, abSeconds, weightWindow = 21 }) {
   const todayIdx = dayIndex(fmtDate(new Date()));
   const liftNames = useMemo(() => [...new Set(exerciseLog.filter((r) => parseFloat(r.Reps) > 0 && r.ExerciseName).map((r) => r.ExerciseName))].sort(), [exerciseLog]);
@@ -1066,7 +1235,7 @@ function ProgressSlide({ dailyLog, exerciseLog, runLog, anchorDate, planOverride
     legend.push(<LegendChip key="p" dashed label="Projected (today only)" />, <LegendChip key="d" dot color={INK} label="Weigh-ins" />);
     const rb = weight.rainbowMap;
     chart = <SvgChart series={[
-      { points: weight.line, width: 4, curve: true, colorAt: (t, p1, p2) => (p1.rainbow && p2.rainbow ? rb.get(t) : null) },
+      { points: weight.line, width: 4, curve: true, endColor: true, straightOverDays: 3, colorAt: (t, p1, p2) => (p1.rainbow && p2.rainbow ? rb.get(t) : null) },
       { points: weight.raw, noLine: true, dots: true, dotColor: INK, dotR: 3, opacity: 0.85 },
     ]} left={{ label: "Weight (lb)", format: (v) => Math.round(v) }} xLabel="Date" bands={[{ from: GOAL_LOW, to: GOAL_HIGH, color: ACCENT }]} />;
   } else if (tab === "completion" && cons) {
@@ -1084,43 +1253,7 @@ function ProgressSlide({ dailyLog, exerciseLog, runLog, anchorDate, planOverride
       chart = <SvgChart series={[{ points: cons.rate, width: 4 }]} left={{ format: (v) => signed(v, 0) }} xLabel="Date" refLines={[{ value: 0 }]} />;
     }
   } else if (tab === "exercise") {
-    if (!lift || !lift.sessions.length) {
-      title = "Lift progress";
-      status = "No lifts logged yet.";
-      chart = <SvgChart series={[]} />;
-    } else {
-      const { meta, sessions, colored } = lift;
-      const last = sessions[sessions.length - 1];
-      const isTime = meta.type === "time", isReps = meta.type === "reps";
-      if (ver === "A") {
-        title = `${exSel} · A · Raw performance`;
-        if (isTime) {
-          status = `Last session: ${formatSecondsClock(last.totalReps)} total over ${last.sets} sets`;
-          legend = [<LegendChip key="a" color={GOLD} label="Total time" />, <LegendChip key="b" color={ACCENT} label="Longest hold" />];
-          chart = <SvgChart series={[{ points: sessions.map((s) => ({ t: s.t, v: s.totalReps })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.longest })), color: ACCENT, dots: true }]} left={{ label: "Total time (s)", color: GOLD }} right={{ label: "Longest hold (s)", color: ACCENT }} xLabel="Date" />;
-        } else if (isReps || !sessions.some((s) => s.weighted)) {
-          status = `Last session: ${last.totalReps} total reps over ${last.sets} sets`;
-          legend = [<LegendChip key="a" color={GOLD} label="Total reps" />, <LegendChip key="b" color={ACCENT} label="Sets" />];
-          chart = <SvgChart series={[{ points: sessions.map((s) => ({ t: s.t, v: s.totalReps })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.sets })), color: ACCENT, dots: true }]} left={{ label: "Total reps", color: GOLD }} right={{ label: "Sets", color: ACCENT }} xLabel="Date" />;
-        } else {
-          status = `Last session: ${last.avgW.toFixed(1)} lb avg × ${last.avgReps.toFixed(1)} reps avg · ${last.sets} sets`;
-          legend = [<LegendChip key="a" color={GOLD} label="Avg weight" />, <LegendChip key="b" color={ACCENT} label="Avg reps / set" />];
-          chart = <SvgChart series={[{ points: sessions.filter((s) => s.weighted).map((s) => ({ t: s.t, v: s.avgW })), color: GOLD, dots: true }, { axis: "right", points: sessions.map((s) => ({ t: s.t, v: s.avgReps })), color: ACCENT, dots: true }]} left={{ label: "Avg weight (lb)", color: GOLD, format: (v) => Math.round(v * 10) / 10 }} right={{ label: "Avg reps / set", color: ACCENT }} xLabel="Date" />;
-        }
-      } else {
-        const cycle = colored.mode === "cycle";
-        const metricLabel = isTime ? "Total time (s)" : isReps || meta.type !== "weighted" || !sessions.some((s) => s.weighted) ? "Total reps" : "Volume load (lb)";
-        title = `${exSel} · B · ${cycle ? `Progression cycle (target ${colored.targets.join(" / ")} reps)` : "Week-over-week total"}`;
-        const lc = colored.sessions[colored.sessions.length - 1];
-        status = lc.label;
-        statusColor = lc.color;
-        legend = cycle
-          ? [<LegendChip key="b" color={ACCENT} label="On track" />, <LegendChip key="g" color={GOLD} label="2 wks" />, <LegendChip key="w" color={WHITE_C} label="3 wks" />, <LegendChip key="r" color={REDC} label="4+ wks / regressed" />]
-          : [<LegendChip key="b" color={ACCENT} label="Improved" />, <LegendChip key="g" color={GOLD} label="Flat 1 wk" />, <LegendChip key="w" color={WHITE_C} label="Flat 2 wks" />, <LegendChip key="r" color={REDC} label="3+ wks / down" />];
-        const val = (s) => (metricLabel === "Volume load (lb)" ? s.volume : s.totalReps);
-        chart = <SvgChart series={[{ points: colored.sessions.map((s) => ({ t: s.t, v: val(s), color: s.color })), width: 4, dots: true }]} left={{ label: metricLabel, format: (v) => (v >= 1000 ? `${Math.round(v / 100) / 10}k` : Math.round(v)) }} xLabel="Date" />;
-      }
-    }
+    ({ title, status, statusColor, legend, chart } = liftChartView(lift, exSel, ver));
   } else if (tab === "run" && run) {
     title = "Run · Pace and distance";
     const lp = run.pace[run.pace.length - 1], ld = run.dist[run.dist.length - 1];
@@ -1295,6 +1428,106 @@ function PlanEditorModal({ planOverrides, onSave, onClose }) {
   );
 }
 
+// Original clip-art-style ogre head icon (not Shrek — a generic ogre face
+// with two ears poking up out of the top) for progressive overload, tinted
+// to match the overload bar on the card.
+function OverloadIcon({ color, size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" style={{ display: "block" }}>
+      {/* ears, poking up out of the top of the head */}
+      <path d="M5 10.5 C4 6.5 6 3 8.3 4 C9.6 4.5 9.6 7.8 9 9.8 Z" fill={color} opacity="0.75" />
+      <path d="M19 10.5 C20 6.5 18 3 15.7 4 C14.4 4.5 14.4 7.8 15 9.8 Z" fill={color} opacity="0.75" />
+      {/* head */}
+      <path d="M12 5.3 C16.5 5.3 18.6 8.7 18.1 12.8 C17.7 16.5 15.6 19.6 12 19.6 C8.4 19.6 6.3 16.5 5.9 12.8 C5.4 8.7 7.5 5.3 12 5.3 Z" fill={color} opacity="0.95" />
+      {/* brow ridge */}
+      <path d="M7.6 10.6 C9 9.6 10.6 9.6 11.9 10.4" stroke="#06211D" strokeWidth="1.1" strokeLinecap="round" fill="none" opacity="0.55" />
+      <path d="M16.4 10.6 C15 9.6 13.4 9.6 12.1 10.4" stroke="#06211D" strokeWidth="1.1" strokeLinecap="round" fill="none" opacity="0.55" />
+      {/* eyes */}
+      <circle cx="9.3" cy="12.4" r="1" fill="#06211D" opacity="0.8" />
+      <circle cx="14.7" cy="12.4" r="1" fill="#06211D" opacity="0.8" />
+      {/* nose */}
+      <circle cx="11.2" cy="14.8" r="0.7" fill="#06211D" opacity="0.4" />
+      <circle cx="12.8" cy="14.8" r="0.7" fill="#06211D" opacity="0.4" />
+      {/* mouth with small tusks */}
+      <path d="M9 16.6 C10.3 18 13.7 18 15 16.6" stroke="#06211D" strokeWidth="1.1" strokeLinecap="round" fill="none" opacity="0.55" />
+      <path d="M9.7 16.9 L9.4 18.1 L10.4 17.3 Z" fill="#F4F7F6" opacity="0.9" />
+      <path d="M14.3 16.9 L14.6 18.1 L13.6 17.3 Z" fill="#F4F7F6" opacity="0.9" />
+    </svg>
+  );
+}
+
+// Large popup with one exercise's progress graphs. Opens on B; A is one tap away.
+// Tap outside it (the slivers of the entry screen) or the X to close.
+function ExerciseGraphModal({ name, rows, planOverrides, anchorDate, onClose }) {
+  const [ver, setVer] = useState("B");
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const lift = useMemo(() => {
+    const sessions = buildLiftSessions(rows, name);
+    return { meta: getExerciseMeta(name, planOverrides), sessions, colored: colorLiftByTarget(sessions, name, planOverrides, anchorDate) };
+  }, [rows, name, planOverrides, anchorDate]);
+  const v = liftChartView(lift, name, ver);
+  const subtitle = v.title.replace(`${name} · `, "");
+  return (
+    <div data-testid="graph-backdrop" onClick={onClose} style={{ position: "absolute", inset: 0, background: "#000000a6", zIndex: 40 }}>
+      <div data-testid="graph-modal" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 14, left: 8, right: 8, bottom: "calc(14px + env(safe-area-inset-bottom, 0px))", background: BG, border: `1px solid ${LINE}`, borderRadius: 14, padding: "14px 12px 12px 12px", display: "flex", flexDirection: "column", gap: 8, boxSizing: "border-box", boxShadow: "0 12px 40px #000000aa" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: INK }}>{name}</div>
+            <div style={{ fontSize: 12, color: SUB, marginTop: 2 }}>{subtitle}</div>
+          </div>
+          {lift.sessions.length > 0 && (
+            <div style={{ display: "flex", borderRadius: 20, border: `1px solid ${LINE}`, overflow: "hidden", flexShrink: 0 }}>
+              {["A", "B"].map((x) => <button key={x} onClick={() => setVer(x)} style={{ padding: "7px 14px", border: "none", background: ver === x ? GOLD + "33" : "transparent", color: ver === x ? GOLD : SUB, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{x}</button>)}
+            </div>
+          )}
+          <button aria-label="Close graphs" onClick={onClose} style={{ background: "none", border: "none", color: SUB, cursor: "pointer", padding: 4, flexShrink: 0 }}><X size={22} /></button>
+        </div>
+        {v.status && <div style={{ fontSize: 13, color: v.statusColor, fontWeight: 600 }}>{v.status}</div>}
+        <div style={{ flex: "1 1 0", minHeight: 0 }}>{lift.sessions.length ? v.chart : <div style={{ color: SUB, fontSize: 14, padding: 12 }}>No sessions logged for this exercise yet.</div>}</div>
+        {v.legend.length > 0 && lift.sessions.length > 0 && <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center", fontSize: 11 }}>{v.legend}</div>}
+      </div>
+    </div>
+  );
+}
+
+// Popover from the overload button: what today's numbers earn on the B graph.
+function OverloadPopover({ name, outlook, status, up, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <>
+      <div data-testid="overload-backdrop" onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 34, background: "transparent" }} />
+      <div data-testid="overload-popover" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", right: 8, ...(up ? { bottom: "calc(100% - 6px)" } : { top: 40 }), width: "min(340px, calc(100% - 16px))", zIndex: 35, background: BG, border: `1px solid ${status ? status.color : LINE}`, borderRadius: 12, padding: 12, boxSizing: "border-box", boxShadow: "0 10px 30px #000000b0", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: INK }}>{name} · this session</div>
+            {outlook.context && <div style={{ fontSize: 11.5, color: SUB, marginTop: 2 }}>{outlook.context}</div>}
+            {status && <div style={{ fontSize: 11.5, color: status.color, marginTop: 2, fontWeight: 600 }}>{status.isToday ? "Today" : "Current"}: {status.label}</div>}
+          </div>
+          <button aria-label="Close" onClick={onClose} style={{ background: "none", border: "none", color: SUB, cursor: "pointer", padding: 2, flexShrink: 0 }}><X size={18} /></button>
+        </div>
+        {outlook.lines.map((l) => (
+          <div key={l.color} data-testid="overload-line" style={{ display: "flex", gap: 8, alignItems: "flex-start", opacity: l.possible ? 1 : 0.55 }}>
+            <div style={{ width: 10, height: 10, borderRadius: 3, background: l.color, marginTop: 4, flexShrink: 0 }} />
+            <div style={{ fontSize: 12.5, lineHeight: 1.4 }}>
+              <span style={{ color: l.color, fontWeight: 700 }}>{l.name}: </span>
+              <span style={{ color: l.possible ? INK : SUB }}>{l.text}</span>
+            </div>
+          </div>
+        ))}
+        {outlook.mode === "cycle" && <div style={{ fontSize: 10.5, color: SUB }}>Reps = what most of your sets hit. Weight = average across sets.</div>}
+      </div>
+    </>
+  );
+}
+
 function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog, queue, planOverrides, isEditingHistorical, onDone, onSave, onSwipeSave, onLocalSave, onSync, syncing, pendingCount }) {
   const wk = getWeekNumber(date, anchorDate);
   const dn = dayName(date);
@@ -1305,6 +1538,26 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const existingDaily = dailyLog.find((r) => r.Date === dateStr);
   const effExerciseLog = useMemo(() => effectiveExerciseLog(exerciseLog, queue), [exerciseLog, queue]);
   const swipeTouchX = useRef(null);
+  const [graphFor, setGraphFor] = useState(null); // { name, at }
+  const [overloadFor, setOverloadFor] = useState(null); // { name, up }
+  useEffect(() => { setGraphFor(null); setOverloadFor(null); }, [dateStr]);
+  const press = useRef({ timer: null, x: 0, y: 0 });
+  const cancelPress = () => { clearTimeout(press.current.timer); press.current.timer = null; };
+  const openGraph = (name) => {
+    press.current.timer = null;
+    try { if (navigator.vibrate) navigator.vibrate(15); } catch { /* not supported */ }
+    setOverloadFor(null);
+    setGraphFor({ name, at: Date.now() });
+  };
+  const pressProps = (name) => ({
+    onTouchStart: (e) => { const t = e.touches[0]; press.current.x = t.clientX; press.current.y = t.clientY; cancelPress(); press.current.timer = setTimeout(() => openGraph(name), 500); },
+    onTouchMove: (e) => { const t = e.touches[0]; if (Math.abs(t.clientX - press.current.x) > 10 || Math.abs(t.clientY - press.current.y) > 10) cancelPress(); },
+    onTouchEnd: cancelPress, onTouchCancel: cancelPress,
+    onMouseDown: (e) => { if (e.button !== 0) return; cancelPress(); press.current.timer = setTimeout(() => openGraph(name), 500); },
+    onMouseUp: cancelPress, onMouseLeave: cancelPress,
+    onContextMenu: (e) => e.preventDefault(),
+  });
+  useEffect(() => () => cancelPress(), []);
 
   const isRestDay = planDay?.Type === "Rest";
 
@@ -1313,6 +1566,16 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   const [weight, setWeight] = useState(existingDaily?.Weight || "");
   const [notes, setNotes] = useState(existingDaily?.Notes || "");
   const [sets, setSets] = useState({});
+  // Graph data: everything logged for the exercise, with this day's sets taken
+  // from what's on screen once all of them are filled in.
+  const graphRows = useMemo(() => {
+    if (!graphFor) return [];
+    const name = graphFor.name;
+    const today = sets[name] || [];
+    const done = today.length > 0 && today.every((st) => String(st.reps).trim() !== "");
+    const others = effExerciseLog.filter((r) => r.ExerciseName === name && r.Date !== dateStr);
+    return done ? [...others, ...setsToRows(name, dateStr, today.map((st) => ({ reps: st.reps, w: st.weight })))] : others;
+  }, [graphFor, effExerciseLog, sets, dateStr]);
   const [runData, setRunData] = useState({ Distance: "", Time: "", Pace: "" });
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
@@ -1471,6 +1734,7 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
   };
 
   return (
+    <div style={{ position: "relative", height: "100%" }}>
     <div style={{ padding: "20px 20px calc(20px + env(safe-area-inset-bottom, 0px) + 100px) 20px", display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
       {isEditingHistorical && (
         <button onClick={onDone} style={{ display: "flex", alignItems: "center", gap: 4, alignSelf: "flex-start", fontSize: 13, color: SUB, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
@@ -1494,14 +1758,28 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
           lastStatus = rowsOnThatDate.length === 0 ? "None" : lastFilled === 0 ? "None" : lastFilled === rowsOnThatDate.length ? "Complete" : "Partial";
         }
         const ghostColor = lastStatus ? statusColor(lastStatus) + "55" : "transparent";
+        const ovStatus = liftStatusNow(effExerciseLog, ex.ExerciseName, dateStr, exRows, planOverrides, anchorDate);
+        const ovColor = ovStatus ? ovStatus.color : SUB;
         return (
-          <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 22px" }}>
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: ghostColor, borderRadius: "10px 0 0 10px" }} title="Status last time" />
-            <div style={{ position: "absolute", left: 5, top: 0, bottom: 0, width: 5, background: stripeColor }} />
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 14, color: stripeColor }}>{ex.ExerciseName}</span>
-              <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+          <div key={ex.ExerciseName} style={{ position: "relative", background: CARD, borderRadius: 10, padding: "12px 12px 12px 27px" }}>
+            <div data-testid="bar-overload" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: ovStatus ? ovStatus.color : "transparent", borderRadius: "10px 0 0 10px" }} title="Progressive overload" />
+            <div data-testid="bar-ghost" style={{ position: "absolute", left: 5, top: 0, bottom: 0, width: 5, background: ghostColor }} title="Status last time" />
+            <div data-testid="bar-today" style={{ position: "absolute", left: 10, top: 0, bottom: 0, width: 5, background: stripeColor }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span data-testid="exercise-name" {...pressProps(ex.ExerciseName)} style={{ fontWeight: 600, fontSize: 14, color: stripeColor, userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none", cursor: "pointer" }}>{ex.ExerciseName}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <button data-testid="overload-btn" aria-label={`${ex.ExerciseName} progressive overload breakdown`}
+                  onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setOverloadFor((cur) => (cur && cur.name === ex.ExerciseName ? null : { name: ex.ExerciseName, up: r.bottom > window.innerHeight * 0.62 })); }}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 26, padding: 0, borderRadius: 7, border: `1px solid ${ovColor}`, background: ovColor + "22", cursor: "pointer" }}>
+                  <OverloadIcon color={ovColor} />
+                </button>
+                <span style={{ color: SUB, fontSize: 12 }}>Target {ex.TargetSets}×{ex.TargetReps}</span>
+              </div>
             </div>
+            {overloadFor && overloadFor.name === ex.ExerciseName && (
+              <OverloadPopover name={ex.ExerciseName} status={ovStatus} up={overloadFor.up} onClose={() => setOverloadFor(null)}
+                outlook={liftOutlook(effExerciseLog, ex.ExerciseName, dateStr, planOverrides, anchorDate, ex.TargetSets)} />
+            )}
             {exRows.map((row, i) => {
               const ph = rowPlaceholder(effExerciseLog, ex.ExerciseName, dateStr, i);
               const timerKey = `${ex.ExerciseName}__${i}`;
@@ -1587,6 +1865,11 @@ function LogEntryView({ date, setDate, anchorDate, dailyLog, exerciseLog, runLog
           <ChevronLeft size={16} /> Swipe for another day <ChevronRight size={16} />
         </div>
       )}
+    </div>
+    {graphFor && (
+      <ExerciseGraphModal name={graphFor.name} rows={graphRows} planOverrides={planOverrides} anchorDate={anchorDate}
+        onClose={() => { if (Date.now() - graphFor.at > 450) setGraphFor(null); }} />
+    )}
     </div>
   );
 }
